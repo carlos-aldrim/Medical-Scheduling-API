@@ -2,6 +2,7 @@
 
 namespace App\Entity;
 
+use App\Enum\AppointmentStatus;
 use App\Repository\AppointmentRepository;
 use Doctrine\ORM\Mapping as ORM;
 use Symfony\Bridge\Doctrine\Types\UuidType;
@@ -11,10 +12,6 @@ use Symfony\Component\Uid\Uuid;
 #[ORM\Entity(repositoryClass: AppointmentRepository::class)]
 class Appointment
 {
-    const STATUS_SCHEDULED = 'scheduled';
-    const STATUS_COMPLETED = 'completed';
-    const STATUS_CANCELLED = 'cancelled';
-
     #[ORM\Id]
     #[ORM\Column(type: UuidType::NAME, unique: true)]
     #[ORM\GeneratedValue(strategy: 'CUSTOM')]
@@ -32,13 +29,13 @@ class Appointment
     #[Groups(['appointment_with_relations'])]
     private ?Patient $patient = null;
 
-    #[ORM\Column(type: 'datetime')]
+    #[ORM\Column(type: 'datetime_immutable')]
     #[Groups(['appointment'])]
     private ?\DateTimeInterface $scheduledAt = null;
 
-    #[ORM\Column(length: 20)]
+    #[ORM\Column(type: 'string', length: 20, enumType: AppointmentStatus::class)]
     #[Groups(['appointment'])]
-    private string $status = self::STATUS_SCHEDULED;
+    private AppointmentStatus $status = AppointmentStatus::Scheduled;
 
     #[ORM\Column(type: 'text', nullable: true)]
     #[Groups(['appointment'])]
@@ -53,25 +50,74 @@ class Appointment
         $this->createdAt = new \DateTimeImmutable();
     }
 
-    public function getId(): ?Uuid { return $this->id; }
+    public function getId(): ?Uuid
+    {
+        return $this->id;
+    }
 
-    public function getDoctor(): ?Doctor { return $this->doctor; }
-    public function setDoctor(?Doctor $doctor): static { $this->doctor = $doctor; return $this; }
+    public function getDoctor(): ?Doctor
+    {
+        return $this->doctor;
+    }
+    public function setDoctor(?Doctor $doctor): static
+    {
+        $this->doctor = $doctor;
+        return $this;
+    }
 
-    public function getPatient(): ?Patient { return $this->patient; }
-    public function setPatient(?Patient $patient): static { $this->patient = $patient; return $this; }
+    public function getPatient(): ?Patient
+    {
+        return $this->patient;
+    }
+    public function setPatient(?Patient $patient): static
+    {
+        $this->patient = $patient;
+        return $this;
+    }
 
-    public function getScheduledAt(): ?\DateTimeInterface { return $this->scheduledAt; }
-    public function setScheduledAt(\DateTimeInterface $scheduledAt): static { $this->scheduledAt = $scheduledAt; return $this; }
+    public function getScheduledAt(): ?\DateTimeInterface
+    {
+        return $this->scheduledAt;
+    }
+    public function setScheduledAt(\DateTimeInterface $scheduledAt): static
+    {
+        $this->scheduledAt = $scheduledAt;
+        return $this;
+    }
 
-    public function getStatus(): string { return $this->status; }
-    public function setStatus(string $status): static { $this->status = $status; return $this; }
+    public function getStatus(): AppointmentStatus
+    {
+        return $this->status;
+    }
 
-    public function getNotes(): ?string { return $this->notes; }
-    public function setNotes(?string $notes): static { $this->notes = $notes; return $this; }
+    public function getNotes(): ?string
+    {
+        return $this->notes;
+    }
+    public function setNotes(?string $notes): static
+    {
+        $this->notes = $notes;
+        return $this;
+    }
 
-    public function getCreatedAt(): \DateTimeImmutable { return $this->createdAt; }
+    public function getCreatedAt(): \DateTimeImmutable
+    {
+        return $this->createdAt;
+    }
 
-    public function cancel(): static { $this->status = self::STATUS_CANCELLED; return $this; }
-    public function complete(): static { $this->status = self::STATUS_COMPLETED; return $this; }
+    // -------------------------------------------------------------------------
+    // Domain transitions — the only way to change status
+    // -------------------------------------------------------------------------
+
+    public function cancel(): static
+    {
+        $this->status = AppointmentStatus::Cancelled;
+        return $this;
+    }
+
+    public function complete(): static
+    {
+        $this->status = AppointmentStatus::Completed;
+        return $this;
+    }
 }

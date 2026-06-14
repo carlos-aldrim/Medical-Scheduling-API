@@ -4,18 +4,24 @@ namespace App\UseCase\Appointment;
 
 use App\DTO\Appointment\CreateAppointmentDTO;
 use App\Entity\Appointment;
+use App\Event\AppointmentCreatedEvent;
 use App\Repository\AppointmentRepository;
 use App\Repository\DoctorRepository;
 use App\Repository\PatientRepository;
+use App\ValueObject\AppointmentSlot;
+use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Component\HttpKernel\Exception\BadRequestHttpException;
 use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
+use Symfony\Component\Messenger\MessageBusInterface;
 
 class CreateAppointmentUseCase
 {
     public function __construct(
-        private AppointmentRepository $appointmentRepository,
-        private DoctorRepository $doctorRepository,
-        private PatientRepository $patientRepository,
+        private AppointmentRepository  $appointmentRepository,
+        private DoctorRepository       $doctorRepository,
+        private PatientRepository      $patientRepository,
+        private EntityManagerInterface $entityManager,
+        private MessageBusInterface    $eventBus,
     ) {}
 
     public function execute(CreateAppointmentDTO $dto): Appointment
@@ -38,32 +44,39 @@ class CreateAppointmentUseCase
             throw new BadRequestHttpException('Patient is not active');
         }
 
-        $scheduledAt = \DateTime::createFromFormat('Y-m-d H:i:s', $dto->scheduledAt);
-
-        if ($scheduledAt < new \DateTime()) {
-            throw new BadRequestHttpException('Cannot schedule appointment in the past');
+        try {
+            $slot = AppointmentSlot::fromString($dto->scheduledAt)->ensureIsInTheFuture();
+        } catch (\InvalidArgumentException $exception) {
+            throw new BadRequestHttpException($exception->getMessage());
         }
 
-        // Regra: conflito de horário (janela de 30 minutos)
-        if ($this->appointmentRepository->hasConflict($doctor, $scheduledAt)) {
-            throw new BadRequestHttpException('Doctor already has an appointment in this time slot');
-        }
+        $appointment = $this->entityManager->wrapInTransaction(
+            function () use ($doctor, $patient, $slot, $dto): Appointment {
 
-        // Regra: limite diário de consultas
-        $count = $this->appointmentRepository->countByDoctorAndDate($doctor, $scheduledAt);
-        if ($count >= $doctor->getMaxAppointmentsPerDay()) {
-            throw new BadRequestHttpException(
-                "Doctor has reached the maximum of {$doctor->getMaxAppointmentsPerDay()} appointments for this day"
-            );
-        }
+                if ($this->appointmentRepository->hasConflict($doctor, $slot, lockForUpdate: true)) {
+                    throw new BadRequestHttpException('Doctor already has an appointment in this time slot');
+                }
 
-        $appointment = new Appointment();
-        $appointment->setDoctor($doctor);
-        $appointment->setPatient($patient);
-        $appointment->setScheduledAt($scheduledAt);
-        $appointment->setNotes($dto->notes);
+                $count = $this->appointmentRepository->countByDoctorAndDate($doctor, $slot);
+                if ($count >= $doctor->getMaxAppointmentsPerDay()) {
+                    throw new BadRequestHttpException(
+                        "Doctor has reached the maximum of {$doctor->getMaxAppointmentsPerDay()} appointments for this day"
+                    );
+                }
 
-        $this->appointmentRepository->save($appointment);
+                $appointment = new Appointment();
+                $appointment->setDoctor($doctor);
+                $appointment->setPatient($patient);
+                $appointment->setScheduledAt($slot->value());
+                $appointment->setNotes($dto->notes);
+
+                $this->appointmentRepository->save($appointment, flush: false);
+
+                return $appointment;
+            }
+        );
+
+        $this->eventBus->dispatch(AppointmentCreatedEvent::fromAppointment($appointment));
 
         return $appointment;
     }

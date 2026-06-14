@@ -2,30 +2,30 @@
 
 namespace App\Validator;
 
-use App\ValueObject\Cpf;
+use App\ValueObject\Crm;
 use Symfony\Component\Validator\Constraint;
 use Symfony\Component\Validator\ConstraintValidator;
 use Symfony\Component\Validator\Exception\UnexpectedTypeException;
 
 #[\Attribute(\Attribute::TARGET_PROPERTY | \Attribute::TARGET_METHOD)]
-class CpfConstraint extends Constraint
+class CrmConstraint extends Constraint
 {
-    public string $message = 'The CPF "{{ value }}" is not valid.';
+    public string $message = 'The CRM "{{ value }}" is not valid. Expected formats: 12345, CRM12345, CRM-SP-12345.';
 }
 
-class CpfConstraintValidator extends ConstraintValidator
+class CrmConstraintValidator extends ConstraintValidator
 {
     public function validate(mixed $value, Constraint $constraint): void
     {
-        if (!$constraint instanceof CpfConstraint) {
-            throw new UnexpectedTypeException($constraint, CpfConstraint::class);
+        if (!$constraint instanceof CrmConstraint) {
+            throw new UnexpectedTypeException($constraint, CrmConstraint::class);
         }
 
         if (null === $value || '' === $value) {
             return;
         }
 
-        if (!Cpf::isValid((string) $value)) {
+        if (!Crm::isValid((string) $value)) {
             $this->context
                 ->buildViolation($constraint->message)
                 ->setParameter('{{ value }}', $value)

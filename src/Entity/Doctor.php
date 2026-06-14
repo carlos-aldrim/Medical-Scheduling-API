@@ -3,6 +3,7 @@
 namespace App\Entity;
 
 use App\Repository\DoctorRepository;
+use App\ValueObject\Crm;
 use Doctrine\Common\Collections\ArrayCollection;
 use Doctrine\Common\Collections\Collection;
 use Doctrine\ORM\Mapping as ORM;
@@ -41,9 +42,6 @@ class Doctor
     #[Groups(['doctor_with_specialty'])]
     private ?Specialty $specialty = null;
 
-    /**
-     * @var Collection<int, Appointment>
-     */
     #[ORM\OneToMany(targetEntity: Appointment::class, mappedBy: 'doctor')]
     private Collection $appointments;
 
@@ -58,7 +56,7 @@ class Doctor
     public function setName(string $name): static { $this->name = $name; return $this; }
 
     public function getCrm(): ?string { return $this->crm; }
-    public function setCrm(string $crm): static { $this->crm = $crm; return $this; }
+    public function setCrm(string $crm): static { $this->crm = (new Crm($crm))->formatted(); return $this; }
 
     public function getMaxAppointmentsPerDay(): int { return $this->maxAppointmentsPerDay; }
     public function setMaxAppointmentsPerDay(int $max): static { $this->maxAppointmentsPerDay = $max; return $this; }

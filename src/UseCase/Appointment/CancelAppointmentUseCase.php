@@ -3,14 +3,18 @@
 namespace App\UseCase\Appointment;
 
 use App\Entity\Appointment;
+use App\Enum\AppointmentStatus;
+use App\Event\AppointmentCancelledEvent;
 use App\Repository\AppointmentRepository;
 use Symfony\Component\HttpKernel\Exception\BadRequestHttpException;
 use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
+use Symfony\Component\Messenger\MessageBusInterface;
 
 class CancelAppointmentUseCase
 {
     public function __construct(
         private AppointmentRepository $appointmentRepository,
+        private MessageBusInterface   $eventBus,
     ) {}
 
     public function execute(string $id): Appointment
@@ -20,16 +24,22 @@ class CancelAppointmentUseCase
             throw new NotFoundHttpException('Appointment not found');
         }
 
-        if ($appointment->getStatus() === Appointment::STATUS_CANCELLED) {
-            throw new BadRequestHttpException('Appointment is already cancelled');
-        }
+        $status = $appointment->getStatus();
 
-        if ($appointment->getStatus() === Appointment::STATUS_COMPLETED) {
-            throw new BadRequestHttpException('Cannot cancel a completed appointment');
+        if (!$status->isCancellable()) {
+            $message = match ($status) {
+                AppointmentStatus::Cancelled => 'Appointment is already cancelled',
+                AppointmentStatus::Completed => 'Cannot cancel a completed appointment',
+                default                      => "Cannot cancel an appointment with status \"{$status->value}\"",
+            };
+
+            throw new BadRequestHttpException($message);
         }
 
         $appointment->cancel();
         $this->appointmentRepository->save($appointment);
+
+        $this->eventBus->dispatch(AppointmentCancelledEvent::fromAppointment($appointment));
 
         return $appointment;
     }

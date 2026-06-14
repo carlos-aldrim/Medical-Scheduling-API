@@ -3,12 +3,14 @@
 namespace App\Controller;
 
 use App\DTO\Specialty\CreateSpecialtyDTO;
+use App\Http\ApiResponse;
 use App\Repository\SpecialtyRepository;
 use App\UseCase\Specialty\CreateSpecialtyUseCase;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpKernel\Attribute\MapRequestPayload;
 use Symfony\Component\Routing\Annotation\Route;
+use Symfony\Component\Serializer\SerializerInterface;
 
 #[Route('/specialties')]
 class SpecialtyController extends AbstractController
@@ -16,13 +18,16 @@ class SpecialtyController extends AbstractController
     public function __construct(
         private CreateSpecialtyUseCase $createSpecialtyUseCase,
         private SpecialtyRepository $specialtyRepository,
+        private SerializerInterface $serializer,
     ) {}
 
     #[Route('', methods: ['GET'])]
     public function index(): JsonResponse
     {
         $specialties = $this->specialtyRepository->findAll();
-        return $this->json($specialties, 200, [], ['groups' => ['specialty']]);
+        $data = json_decode($this->serializer->serialize($specialties, 'json', ['groups' => ['specialty']]), true);
+
+        return ApiResponse::collection($data, count($data));
     }
 
     #[Route('/{id}', methods: ['GET'])]
@@ -30,9 +35,12 @@ class SpecialtyController extends AbstractController
     {
         $specialty = $this->specialtyRepository->find($id);
         if (!$specialty) {
-            return $this->json(['message' => 'Specialty not found'], 404);
+            return ApiResponse::notFound('Specialty not found');
         }
-        return $this->json($specialty, 200, [], ['groups' => ['specialty']]);
+
+        $data = json_decode($this->serializer->serialize($specialty, 'json', ['groups' => ['specialty']]), true);
+
+        return ApiResponse::ok($data);
     }
 
     #[Route('', methods: ['POST'])]
@@ -40,6 +48,8 @@ class SpecialtyController extends AbstractController
         #[MapRequestPayload] CreateSpecialtyDTO $dto
     ): JsonResponse {
         $specialty = $this->createSpecialtyUseCase->execute($dto);
-        return $this->json($specialty, 201, [], ['groups' => ['specialty']]);
+        $data = json_decode($this->serializer->serialize($specialty, 'json', ['groups' => ['specialty']]), true);
+
+        return ApiResponse::created($data);
     }
 }

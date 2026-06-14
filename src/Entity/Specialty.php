@@ -28,9 +28,6 @@ class Specialty
     #[Groups(['specialty'])]
     private ?string $description = null;
 
-    /**
-     * @var Collection<int, Doctor>
-     */
     #[ORM\OneToMany(targetEntity: Doctor::class, mappedBy: 'specialty')]
     private Collection $doctors;
 

@@ -1,81 +1,365 @@
 # 🏥 Medical Scheduling API
 
-API REST para gerenciamento de agendamentos médicos, desenvolvida com **PHP 8.2** e **Symfony 7**, seguindo os princípios de Clean Architecture com separação em camadas de Controllers, Use Cases e Repositories.
+> REST API para gerenciamento completo de agendamentos médicos — construída com **PHP 8.2**, **Symfony 7** e autenticação stateless via **JWT**, seguindo os princípios de Clean Architecture.
 
 ---
 
 ## 📋 Índice
 
-- [Sobre o Projeto](#sobre-o-projeto)
+- [Visão Geral](#visão-geral)
 - [Tecnologias](#tecnologias)
 - [Arquitetura](#arquitetura)
+- [Padrões e Práticas de Código](#padrões-e-práticas-de-código)
+- [Autenticação e Autorização](#autenticação-e-autorização)
 - [Regras de Negócio](#regras-de-negócio)
 - [Pré-requisitos](#pré-requisitos)
 - [Instalação e Execução](#instalação-e-execução)
 - [Variáveis de Ambiente](#variáveis-de-ambiente)
+- [Fluxo Completo da Aplicação](#fluxo-completo-da-aplicação)
 - [Endpoints](#endpoints)
 - [Exemplos de Requisição](#exemplos-de-requisição)
+- [Tratamento de Erros](#tratamento-de-erros)
 - [Testes](#testes)
 - [Estrutura do Projeto](#estrutura-do-projeto)
 
 ---
 
-## Sobre o Projeto
+## Visão Geral
 
-Sistema de agendamento médico que permite o gerenciamento de pacientes, médicos, especialidades e consultas. A API garante a integridade dos agendamentos através de validações de conflito de horário, limite diário de consultas por médico e controle de status das consultas.
+Um sistema de agendamento médico que vai além do CRUD básico. Ele gerencia pacientes, médicos, especialidades e consultas com controle fino de permissões por perfil — e a integridade dos dados é garantida em múltiplas camadas: validação de payload via DTOs, regras de negócio isoladas em Use Cases e queries especializadas nos Repositories.
+
+A ideia central é que erros de negócio sejam detectados o mais cedo possível, com respostas consistentes e semânticas em todos os endpoints.
+
+**O que o sistema faz:**
+
+- Autenticação stateless com JWT (LexikJWTAuthenticationBundle)
+- RBAC com três perfis distintos: Admin, Médico e Recepcionista
+- Validação de CPF com verificação real dos dígitos verificadores
+- Validação de CRM com suporte a quatro formatos nacionais diferentes
+- Controle de conflito de horário com janela de 30 minutos por médico
+- Limite diário de consultas configurável individualmente por médico
+- Respostas padronizadas em toda a API via `ApiResponse`
+- Tratamento centralizado de exceções com mapeamento automático para HTTP status codes
 
 ---
 
 ## Tecnologias
 
-| Tecnologia | Versão | Uso |
+| Tecnologia | Versão | Papel |
 |---|---|---|
 | PHP | 8.2 | Linguagem principal |
-| Symfony | 7.x | Framework web |
+| Symfony | 7.x | Framework HTTP, DI, Event Dispatcher |
 | Doctrine ORM | 3.x | Mapeamento objeto-relacional |
-| Doctrine Migrations | — | Versionamento do schema |
-| PostgreSQL | 16 | Banco de dados |
-| Docker / Compose | — | Containerização |
-| PHPUnit | 11.x | Testes unitários |
-| Nginx | Alpine | Servidor web |
+| Doctrine Migrations | — | Versionamento do schema do banco |
+| LexikJWTAuthenticationBundle | — | Emissão e validação de tokens JWT |
+| PostgreSQL | 16 | Banco de dados relacional |
+| Docker / Compose | — | Containerização e orquestração |
+| PHPUnit | 11.x | Testes unitários dos Use Cases |
+| Nginx | Alpine | Servidor web / proxy reverso |
 
 ---
 
 ## Arquitetura
 
-O projeto segue uma arquitetura em camadas inspirada em **Clean Architecture**, onde cada camada tem responsabilidade única e bem definida:
+O projeto segue uma arquitetura em camadas inspirada em **Clean Architecture**, com uma regra simples de dependência: camadas externas conhecem as internas, nunca o inverso. Isso significa que o banco de dados não contamina a lógica de negócio, e o HTTP não contamina nada além do Controller.
 
 ```
-Request → Controller → UseCase → Repository → Entity
-                ↓
-             Response
+HTTP Request
+     │
+     ▼
+┌─────────────┐
+│ Controller  │  ← Recebe a requisição, injeta o DTO via #[MapRequestPayload]
+└──────┬──────┘
+       │ DTO (dados validados)
+       ▼
+┌─────────────┐
+│   UseCase   │  ← Orquestra regras de negócio; única dependência: Repositories
+└──────┬──────┘
+       │ Entity (resultado persistido)
+       ▼
+┌──────────────┐
+│  Repository  │  ← Abstrai o acesso ao banco; queries específicas por domínio
+└──────┬───────┘
+       │
+       ▼
+┌────────────┐
+│   Entity   │  ← Modelo de dados + comportamentos de domínio (ex: cancel(), complete())
+└────────────┘
+       │
+       ▼
+  PostgreSQL
 ```
 
-- **Controller** — recebe a requisição HTTP, valida o payload via DTO e delega ao UseCase
-- **DTO** — valida e transporta os dados de entrada com anotações do Symfony Validator
-- **UseCase** — contém toda a lógica e regras de negócio, isolada e testável
-- **Repository** — abstrai o acesso ao banco de dados com queries específicas por domínio
-- **Entity** — representa o modelo de dados e encapsula comportamentos do domínio
+### Responsabilidades por camada
+
+**Controller** — ponto de entrada HTTP. Não toma nenhuma decisão de negócio. Recebe o DTO já validado via `#[MapRequestPayload]`, delega ao Use Case e serializa a resposta com `ApiResponse`. Se você está escrevendo um `if` de regra de negócio num Controller, alguma coisa está no lugar errado.
+
+**DTO (Data Transfer Object)** — carrega e valida os dados de entrada usando anotações do Symfony Validator (`#[Assert\*]`). É readonly por natureza, o que garante imutabilidade desde a deserialização. Nenhum dado mal formado chega ao UseCase.
+
+**UseCase** — é aqui que a lógica de negócio vive. A camada mais testável do sistema: depende apenas de interfaces de repositório, então qualquer teste unitário pode mockar tudo sem precisar de banco de dados. Cada Use Case tem exatamente um método `execute()` e uma responsabilidade clara.
+
+**Repository** — abstrai as queries ao banco. A ideia é que quem chama não saiba como a query foi feita — só sabe que pode perguntar `hasConflict`, `countByDoctorAndDate` ou `findByPatient`. Nada de queries genéricas espalhadas pelo código.
+
+**Entity** — representa o modelo de dados e encapsula as transições de estado. Uma consulta não muda de status por um setter direto: ela tem métodos `cancel()` e `complete()` que refletem o que realmente acontece no domínio.
+
+---
+
+## Padrões e Práticas de Código
+
+### Use Case Pattern
+
+Cada operação de negócio é encapsulada numa classe com método único `execute()`. Isso garante responsabilidade única (SRP), facilidade de teste e rastreabilidade — ao ler o nome do Use Case, o comportamento fica imediatamente claro, sem precisar rastrear o fluxo de um Controller até o banco.
+
+```php
+// Toda regra de negócio de agendamento vive aqui, isolada
+class CreateAppointmentUseCase
+{
+    public function execute(CreateAppointmentDTO $dto): Appointment { ... }
+}
+```
+
+### Enums com comportamento
+
+Os enums aqui não são apenas rótulos para evitar magic strings. Eles encapsulam lógica de domínio diretamente, sendo a única fonte de verdade sobre o que cada estado pode ou não fazer:
+
+```php
+enum AppointmentStatus: string
+{
+    case Scheduled = 'scheduled';
+    case Completed = 'completed';
+    case Cancelled = 'cancelled';
+
+    public function isCancellable(): bool
+    {
+        return $this === self::Scheduled;
+    }
+
+    public function isTerminal(): bool
+    {
+        return match ($this) {
+            self::Completed, self::Cancelled => true,
+            default => false,
+        };
+    }
+}
+```
+
+Da mesma forma, `UserRole` sabe quais permissões cada perfil carrega:
+
+```php
+enum UserRole: string
+{
+    public function canManageScheduling(): bool
+    {
+        return match ($this) {
+            self::Admin, self::Receptionist => true,
+            default => false,
+        };
+    }
+}
+```
+
+### ApiResponse — Response Object Pattern
+
+Em vez de instanciar `JsonResponse` espalhado pelos Controllers, toda resposta passa pela classe `ApiResponse`. O envelope, os status codes e os códigos de erro semânticos ficam num único lugar. Mudar o formato de resposta da API inteira é alterar um arquivo só.
+
+```php
+// Sucesso
+ApiResponse::ok($data);                    // 200
+ApiResponse::created($data);               // 201
+ApiResponse::collection($data, $total);    // 200 com meta.total
+
+// Erros
+ApiResponse::notFound($msg);      // 404 NOT_FOUND
+ApiResponse::conflict($msg);      // 409 CONFLICT
+ApiResponse::unprocessable($msg); // 422 UNPROCESSABLE
+ApiResponse::badRequest($msg);    // 400 BAD_REQUEST
+```
+
+### Tratamento Global de Exceções
+
+O `ExceptionSubscriber` intercepta todas as exceções via `KernelEvents::EXCEPTION`, mapeando automaticamente `HttpExceptionInterface` para o status code correto e `ValidationFailedException` para um payload estruturado de erros por campo. Nenhum `try/catch` nos Controllers — a exceção é lançada em qualquer camada e chega ao cliente com o formato certo.
+
+### Custom Validators como Attributes
+
+Validações de domínio complexas (CPF, CRM) são implementadas como Symfony Constraints reutilizáveis. O resultado é uma sintaxe limpa nos DTOs, sem lógica de validação inline:
+
+```php
+#[CpfConstraint]
+public readonly string $cpf,
+
+#[CrmConstraint]
+public readonly string $crm,
+```
+
+### Value Objects (Cpf, Crm, AppointmentSlot)
+
+CPF, CRM e horário de agendamento não circulam pelo código como strings soltas. Eles são Value Objects imutáveis em `src/ValueObject/`, e carregam sua própria lógica de normalização e validação:
+
+```php
+$cpf = new Cpf('123.456.789-09');   // normaliza e valida dígitos verificadores
+$cpf->value();                      // "12345678909"
+$cpf->formatted();                  // "123.456.789-09"
+
+$crm = new Crm('sp-12345');
+$crm->formatted();                  // "CRM-SP-12345" (normalizado)
+
+$slot = AppointmentSlot::fromString('2026-07-01 14:00:00')
+    ->ensureIsInTheFuture();
+$slot->windowStart();               // janela de conflito (-29min)
+$slot->windowEnd();                 // janela de conflito (+29min)
+$slot->dayStart();                  // limite do dia, usado no limite diário
+```
+
+Os Validators (`CpfConstraint`, `CrmConstraint`) delegam para `Cpf::isValid()` e `Crm::isValid()`. Os setters das entidades (`Doctor::setCrm()`, `Patient::setCpf()`) constroem o Value Object internamente — garantindo que não existe CPF ou CRM inválido no banco, independente de como o setter foi chamado. O `CreateAppointmentUseCase` usa `AppointmentSlot` para parsing em UTC, validação de "não pode ser no passado" e cálculo das janelas de conflito e limite diário, sem duplicar lógica de datas em nenhum outro lugar.
+
+### Injeção de Dependência via Constructor Promotion
+
+Todos os serviços usam constructor promotion com `readonly` implícito. Sem boilerplate, sem atribuições manuais, dependências explícitas na assinatura:
+
+```php
+public function __construct(
+    private AppointmentRepository $appointmentRepository,
+    private DoctorRepository $doctorRepository,
+    private PatientRepository $patientRepository,
+) {}
+```
+
+### Serialization Groups
+
+A serialização de entidades usa grupos nomeados para controlar exatamente o que aparece em cada contexto. Sem over-fetching, sem referências circulares acidentais:
+
+```php
+#[Groups(['appointment'])]                  // campos básicos
+#[Groups(['appointment_with_relations'])]   // inclui doctor e patient aninhados
+#[Groups(['doctor_with_specialty'])]        // inclui specialty aninhada
+```
+
+### Domain Events e Notificações Assíncronas (Symfony Messenger)
+
+Criar e cancelar uma consulta dispara eventos de domínio — `AppointmentCreatedEvent` e `AppointmentCancelledEvent` — através do `MessageBusInterface` do Symfony Messenger. Os Use Cases publicam "isto aconteceu" e param por aí; eles não sabem como a notificação é entregue nem se existe uma:
+
+```php
+// dentro do CreateAppointmentUseCase, após persistir
+$this->eventBus->dispatch(AppointmentCreatedEvent::fromAppointment($appointment));
+```
+
+Os handlers em `src/MessageHandler/`, marcados com `#[AsMessageHandler]`, simulam envio de e-mail ou SMS de confirmação e cancelamento (via log). A configuração em `config/packages/messenger.yaml` roteia os eventos para um transporte `async`. O padrão usa `doctrine://` (armazena as mensagens na tabela `messenger_messages`, sem dependências externas), mas pode ser trocado para RabbitMQ ou Redis sem alterar uma linha de código da aplicação:
+
+```env
+# Doctrine (padrão, sem infra extra)
+MESSENGER_TRANSPORT_DSN=doctrine://default?queue_name=async
+
+# RabbitMQ
+MESSENGER_TRANSPORT_DSN=amqp://guest:guest@rabbitmq:5672/%2f/messages
+
+# Redis
+MESSENGER_TRANSPORT_DSN=redis://redis:6379/messages
+```
+
+Para processar as mensagens em background:
+
+```bash
+docker compose exec app php bin/console messenger:consume async -vv
+```
+
+Mensagens que falham após as tentativas de retry (`max_retries: 3`, multiplicador 2x) vão para a fila `failed`, reprocessável com `messenger:consume failed`.
+
+---
+
+## Autenticação e Autorização
+
+### Fluxo JWT
+
+A autenticação é stateless e baseada em tokens JWT assinados com par de chaves RSA. O token expira em **1 hora** (`token_ttl: 3600`). Sem sessão, sem estado no servidor.
+
+```
+Cliente                          API
+  │                               │
+  │  POST /auth/login             │
+  │  { email, password }          │
+  │ ─────────────────────────────►│
+  │                               │  Valida credenciais
+  │                               │  Gera JWT (RS256, TTL 1h)
+  │◄─────────────────────────────│
+  │  { token: "eyJ..." }          │
+  │                               │
+  │  GET /appointments            │
+  │  Authorization: Bearer eyJ... │
+  │ ─────────────────────────────►│
+  │                               │  Valida assinatura JWT
+  │                               │  Extrai email (user_id_claim)
+  │                               │  Carrega User do banco
+  │◄─────────────────────────────│
+  │  { success: true, data: [...]}│
+```
+
+### Perfis e Permissões (RBAC)
+
+| Rota | ROLE_ADMIN | ROLE_RECEPTIONIST | ROLE_DOCTOR |
+|---|:---:|:---:|:---:|
+| `POST /auth/login` | ✅ | ✅ | ✅ |
+| `GET /auth/me` | ✅ | ✅ | ✅ |
+| `POST /auth/register` | ✅ | ❌ | ❌ |
+| `GET /doctors` | ✅ | ✅ | ✅ |
+| `POST /doctors` | ✅ | ❌ | ❌ |
+| `PATCH /doctors/{id}/deactivate` | ✅ | ❌ | ❌ |
+| `GET /specialties` | ✅ | ✅ | ✅ |
+| `POST /specialties` | ✅ | ❌ | ❌ |
+| `GET /patients` | ✅ | ✅ | ❌ |
+| `POST /patients` | ✅ | ✅ | ❌ |
+| `PATCH /patients/{id}/deactivate` | ✅ | ✅ | ❌ |
+| `GET /appointments` | ✅ | ✅ | ❌ |
+| `POST /appointments` | ✅ | ✅ | ❌ |
+| `PATCH /appointments/{id}/cancel` | ✅ | ✅ | ❌ |
+
+### Geração das chaves JWT
+
+```bash
+# Gerar chave privada
+openssl genrsa -out config/jwt/private.pem 4096
+
+# Derivar chave pública
+openssl rsa -pubout -in config/jwt/private.pem -out config/jwt/public.pem
+```
+
+Ou via Symfony CLI (recomendado):
+
+```bash
+docker compose exec app php bin/console lexik:jwt:generate-keypair
+```
 
 ---
 
 ## Regras de Negócio
 
 ### Consultas (Appointments)
-- Não é possível agendar uma consulta no passado
-- O médico não pode ter duas consultas em uma janela de 30 minutos (conflito de horário)
-- O médico possui um limite máximo de consultas por dia (padrão: 10, configurável por médico)
-- Consultas com status `completed` não podem ser canceladas
-- Consultas já `cancelled` não podem ser canceladas novamente
+
+| Regra | Comportamento |
+|---|---|
+| Agendamento no passado | `400 BAD_REQUEST` — "Cannot schedule appointment in the past" |
+| Conflito de horário | `400 BAD_REQUEST` — janela de ±29 minutos por médico, excluindo canceladas |
+| Limite diário atingido | `400 BAD_REQUEST` — limite configurável por médico (padrão 10) |
+| Médico inativo | `400 BAD_REQUEST` — médico não aceita novos agendamentos |
+| Paciente inativo | `400 BAD_REQUEST` — paciente não pode agendar consultas |
+| Cancelar consulta completada | `400 BAD_REQUEST` — status terminal, irreversível |
+| Cancelar já cancelada | `400 BAD_REQUEST` — idempotência explícita |
 
 ### Médicos (Doctors)
-- O CRM deve ser único no sistema
-- Médicos inativos não aceitam novos agendamentos
-- Cada médico está vinculado a uma especialidade
+
+- CRM único no sistema, validado em múltiplos formatos (`12345`, `CRM12345`, `CRM-SP-12345`, `SP-12345`)
+- Cada médico está vinculado obrigatoriamente a uma especialidade
+- `maxAppointmentsPerDay` é configurável individualmente na criação
 
 ### Pacientes (Patients)
-- O CPF deve ser único e válido (validação de dígitos verificadores)
-- Pacientes inativos não podem ter novas consultas agendadas
+
+- CPF único e validado com algoritmo de dígitos verificadores — sequências homogêneas como `111.111.111-11` são explicitamente rejeitadas
+- Telefone é opcional
+
+### Usuários (Users)
+
+- Apenas administradores podem registrar novos usuários (`ROLE_ADMIN` no `POST /auth/register`)
+- Senhas seguem política rigorosa: mínimo 8 caracteres, ao menos uma maiúscula, uma minúscula e um dígito
 
 ---
 
@@ -88,28 +372,57 @@ Request → Controller → UseCase → Repository → Entity
 
 ## Instalação e Execução
 
-**1. Clone o repositório**
+### 1. Clone o repositório
+
 ```bash
-git clone https://github.com/seu-usuario/medical-scheduling-api.git
-cd medical-scheduling-api
+git clone https://github.com/carlos-aldrim/Medical-Scheduling-API
+cd Medical-Scheduling-API
 ```
 
-**2. Configure as variáveis de ambiente**
+### 2. Configure as variáveis de ambiente
+
 ```bash
 cp .env.example .env
 ```
 
-**3. Suba os containers**
+Edite o `.env` conforme necessário (veja [Variáveis de Ambiente](#variáveis-de-ambiente)).
+
+### 3. Suba os containers
+
 ```bash
 docker compose up --build -d
 ```
 
-**4. Execute as migrations**
+Isso iniciará três serviços:
+- `medical_app` — PHP-FPM com a aplicação Symfony
+- `medical_nginx` — Nginx como proxy reverso (porta `APP_PORT`, padrão `9000`)
+- `medical_db` — PostgreSQL 16 com healthcheck
+
+### 4. Gere as chaves JWT
+
+```bash
+docker compose exec app php bin/console lexik:jwt:generate-keypair
+```
+
+### 5. Execute as migrations
+
 ```bash
 docker compose exec app php bin/console doctrine:migrations:migrate
 ```
 
-**5. Acesse a API**
+### 6. Crie o primeiro usuário administrador
+
+Como `POST /auth/register` exige `ROLE_ADMIN`, o primeiro admin precisa ser criado via console — é um bootstrap necessário e intencional:
+
+```bash
+docker compose exec app php bin/console app:create-admin \
+  --name="Admin" \
+  --email="admin@hospital.com" \
+  --password="Admin@123"
+```
+
+### 7. Acesse a API
+
 ```
 http://localhost:9000
 ```
@@ -118,113 +431,409 @@ http://localhost:9000
 
 ## Variáveis de Ambiente
 
-Copie o arquivo `.env.example` para `.env` e ajuste conforme necessário:
-
 | Variável | Padrão | Descrição |
 |---|---|---|
-| `APP_ENV` | `dev` | Ambiente da aplicação |
-| `APP_SECRET` | — | Chave secreta da aplicação |
+| `APP_ENV` | `dev` | Ambiente (`dev`, `prod`, `test`) |
+| `APP_SECRET` | — | Chave secreta do Symfony (mínimo 32 chars) |
 | `APP_PORT` | `9000` | Porta exposta pelo Nginx |
 | `POSTGRES_DB` | `medical_scheduling` | Nome do banco de dados |
-| `POSTGRES_USER` | `admin` | Usuário do banco |
-| `POSTGRES_PASSWORD` | `secret` | Senha do banco |
+| `POSTGRES_USER` | `admin` | Usuário do PostgreSQL |
+| `POSTGRES_PASSWORD` | `secret` | Senha do PostgreSQL |
 | `DB_PORT` | `5432` | Porta do PostgreSQL |
+| `DATABASE_URL` | _(derivado)_ | DSN completo do Doctrine |
+| `JWT_SECRET_KEY` | `config/jwt/private.pem` | Caminho para a chave privada RSA |
+| `JWT_PUBLIC_KEY` | `config/jwt/public.pem` | Caminho para a chave pública RSA |
+| `JWT_PASSPHRASE` | _(vazio)_ | Passphrase da chave privada (se houver) |
 | `DEFAULT_URI` | `http://localhost:9000` | URI base da aplicação |
+| `MESSENGER_TRANSPORT_DSN` | `doctrine://default?queue_name=async` | Transporte do Symfony Messenger — suporta `amqp://...` e `redis://...` sem alteração de código |
 
 ---
 
-## Endpoints
+## Fluxo Completo da Aplicação
 
-### Specialties
-| Método | Rota | Descrição |
-|---|---|---|
-| `GET` | `/specialties` | Lista todas as especialidades |
-| `GET` | `/specialties/{id}` | Detalha uma especialidade |
-| `POST` | `/specialties` | Cadastra uma especialidade |
+O fluxo abaixo ilustra um cenário real de ponta a ponta: da criação dos cadastros até o ciclo completo de uma consulta.
 
-### Doctors
-| Método | Rota | Descrição |
-|---|---|---|
-| `GET` | `/doctors` | Lista todos os médicos |
-| `GET` | `/doctors/{id}` | Detalha um médico |
-| `POST` | `/doctors` | Cadastra um médico |
-| `PATCH` | `/doctors/{id}/deactivate` | Desativa um médico |
+### Passo 1 — Autenticação
 
-### Patients
-| Método | Rota | Descrição |
-|---|---|---|
-| `GET` | `/patients` | Lista todos os pacientes |
-| `GET` | `/patients/{id}` | Detalha um paciente |
-| `POST` | `/patients` | Cadastra um paciente |
-| `PATCH` | `/patients/{id}/deactivate` | Desativa um paciente |
-
-### Appointments
-| Método | Rota | Descrição |
-|---|---|---|
-| `GET` | `/appointments` | Lista todas as consultas |
-| `GET` | `/appointments/{id}` | Detalha uma consulta |
-| `POST` | `/appointments` | Agenda uma consulta |
-| `PATCH` | `/appointments/{id}/cancel` | Cancela uma consulta |
-| `GET` | `/appointments/patient/{patientId}` | Histórico de consultas do paciente |
-
----
-
-## Exemplos de Requisição
-
-### Cadastrar especialidade
 ```http
-POST /specialties
+POST /auth/login
 Content-Type: application/json
 
 {
-  "name": "Cardiology",
-  "description": "Heart and cardiovascular specialist"
+  "email": "admin@hospital.com",
+  "password": "Admin@123"
 }
 ```
 
-### Cadastrar médico
+**Resposta:**
+```json
+{
+  "token": "eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiJ9..."
+}
+```
+
+Use o token como `Authorization: Bearer <token>` em todas as requisições seguintes.
+
+---
+
+### Passo 2 — Registrar usuário recepcionista (Admin only)
+
+```http
+POST /auth/register
+Authorization: Bearer <admin_token>
+Content-Type: application/json
+
+{
+  "name": "Maria Silva",
+  "email": "maria@hospital.com",
+  "password": "Recepc@123",
+  "role": "ROLE_RECEPTIONIST"
+}
+```
+
+**Resposta `201 Created`:**
+```json
+{
+  "success": true,
+  "data": {
+    "id": "018f1234-...",
+    "name": "Maria Silva",
+    "email": "maria@hospital.com",
+    "roles": ["ROLE_RECEPTIONIST", "ROLE_USER"]
+  }
+}
+```
+
+---
+
+### Passo 3 — Criar especialidade (Admin only)
+
+```http
+POST /specialties
+Authorization: Bearer <admin_token>
+Content-Type: application/json
+
+{
+  "name": "Cardiologia",
+  "description": "Especialidade do coração e sistema cardiovascular"
+}
+```
+
+**Resposta `201 Created`:**
+```json
+{
+  "success": true,
+  "data": {
+    "id": "018f1235-...",
+    "name": "Cardiologia",
+    "description": "Especialidade do coração e sistema cardiovascular"
+  }
+}
+```
+
+---
+
+### Passo 4 — Cadastrar médico (Admin only)
+
 ```http
 POST /doctors
+Authorization: Bearer <admin_token>
 Content-Type: application/json
 
 {
   "name": "Dr. Gregory House",
-  "crm": "CRM12345",
-  "specialtyId": "uuid-da-especialidade",
+  "crm": "CRM-SP-12345",
+  "specialtyId": "018f1235-...",
   "maxAppointmentsPerDay": 8
 }
 ```
 
-### Cadastrar paciente
+**Resposta `201 Created`:**
+```json
+{
+  "success": true,
+  "data": {
+    "id": "018f1236-...",
+    "name": "Dr. Gregory House",
+    "crm": "CRM-SP-12345",
+    "maxAppointmentsPerDay": 8,
+    "isActive": true
+  }
+}
+```
+
+---
+
+### Passo 5 — Cadastrar paciente (Admin ou Recepcionista)
+
 ```http
 POST /patients
+Authorization: Bearer <receptionist_token>
 Content-Type: application/json
 
 {
-  "name": "John Doe",
+  "name": "João da Silva",
   "cpf": "52998224725",
-  "birthDate": "1990-05-15",
+  "birthDate": "1985-03-20",
   "phone": "85999990000"
 }
 ```
 
-### Agendar consulta
+**Resposta `201 Created`:**
+```json
+{
+  "success": true,
+  "data": {
+    "id": "018f1237-...",
+    "name": "João da Silva",
+    "cpf": "52998224725",
+    "birthDate": "1985-03-20",
+    "phone": "85999990000",
+    "isActive": true
+  }
+}
+```
+
+---
+
+### Passo 6 — Agendar consulta (Admin ou Recepcionista)
+
 ```http
 POST /appointments
+Authorization: Bearer <receptionist_token>
 Content-Type: application/json
 
 {
-  "doctorId": "uuid-do-medico",
-  "patientId": "uuid-do-paciente",
+  "doctorId": "018f1236-...",
+  "patientId": "018f1237-...",
   "scheduledAt": "2025-12-20 14:00:00",
   "notes": "Primeira consulta, paciente com histórico de hipertensão"
 }
 ```
 
-### Cancelar consulta
-```http
-PATCH /appointments/{id}/cancel
+**Resposta `201 Created`:**
+```json
+{
+  "success": true,
+  "data": {
+    "id": "018f1238-...",
+    "scheduledAt": "2025-12-20T14:00:00+00:00",
+    "status": "scheduled",
+    "notes": "Primeira consulta, paciente com histórico de hipertensão",
+    "createdAt": "2025-06-12T10:00:00+00:00",
+    "doctor": {
+      "id": "018f1236-...",
+      "name": "Dr. Gregory House",
+      "crm": "CRM-SP-12345"
+    },
+    "patient": {
+      "id": "018f1237-...",
+      "name": "João da Silva",
+      "cpf": "52998224725"
+    }
+  }
+}
 ```
+
+---
+
+### Passo 7 — Consultar histórico do paciente
+
+```http
+GET /appointments/patient/018f1237-...
+Authorization: Bearer <receptionist_token>
+```
+
+**Resposta `200 OK`:**
+```json
+{
+  "success": true,
+  "data": [...],
+  "meta": { "total": 1 }
+}
+```
+
+---
+
+### Passo 8 — Cancelar consulta
+
+```http
+PATCH /appointments/018f1238-.../cancel
+Authorization: Bearer <receptionist_token>
+```
+
+**Resposta `200 OK`:**
+```json
+{
+  "success": true,
+  "data": {
+    "id": "018f1238-...",
+    "status": "cancelled",
+    ...
+  }
+}
+```
+
+---
+
+## Endpoints
+
+### Auth
+
+| Método | Rota | Autenticação | Roles |
+|---|---|---|---|
+| `POST` | `/auth/login` | Pública | — |
+| `POST` | `/auth/register` | JWT | ROLE_ADMIN |
+| `GET` | `/auth/me` | JWT | Qualquer autenticado |
+
+### Specialties
+
+| Método | Rota | Roles |
+|---|---|---|
+| `GET` | `/specialties` | Qualquer autenticado |
+| `GET` | `/specialties/{id}` | Qualquer autenticado |
+| `POST` | `/specialties` | ROLE_ADMIN |
+
+### Doctors
+
+| Método | Rota | Roles |
+|---|---|---|
+| `GET` | `/doctors` | Qualquer autenticado |
+| `GET` | `/doctors/{id}` | Qualquer autenticado |
+| `POST` | `/doctors` | ROLE_ADMIN |
+| `PATCH` | `/doctors/{id}/deactivate` | ROLE_ADMIN |
+
+### Patients
+
+| Método | Rota | Roles |
+|---|---|---|
+| `GET` | `/patients` | ROLE_ADMIN, ROLE_RECEPTIONIST |
+| `GET` | `/patients/{id}` | ROLE_ADMIN, ROLE_RECEPTIONIST |
+| `POST` | `/patients` | ROLE_ADMIN, ROLE_RECEPTIONIST |
+| `PATCH` | `/patients/{id}/deactivate` | ROLE_ADMIN, ROLE_RECEPTIONIST |
+
+### Appointments
+
+| Método | Rota | Roles |
+|---|---|---|
+| `GET` | `/appointments` | ROLE_ADMIN, ROLE_RECEPTIONIST |
+| `GET` | `/appointments/{id}` | ROLE_ADMIN, ROLE_RECEPTIONIST |
+| `GET` | `/appointments/patient/{patientId}` | ROLE_ADMIN, ROLE_RECEPTIONIST |
+| `POST` | `/appointments` | ROLE_ADMIN, ROLE_RECEPTIONIST |
+| `PATCH` | `/appointments/{id}/cancel` | ROLE_ADMIN, ROLE_RECEPTIONIST |
+
+---
+
+## Exemplos de Requisição
+
+### Validação de senha (RegisterDTO)
+
+A senha precisa satisfazer todos os critérios ao mesmo tempo:
+
+```http
+POST /auth/register
+Authorization: Bearer <admin_token>
+Content-Type: application/json
+
+{
+  "name": "Dr. Wilson",
+  "email": "wilson@hospital.com",
+  "password": "Weak",
+  "role": "ROLE_DOCTOR"
+}
+```
+
+**Resposta `422 Unprocessable Entity`:**
+```json
+{
+  "success": false,
+  "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "Validation failed",
+    "errors": [
+      { "field": "password", "message": "Password must be at least 8 characters" }
+    ]
+  }
+}
+```
+
+### Formatos de CRM aceitos
+
+```json
+{ "crm": "12345" }          ✅ Numérico simples
+{ "crm": "CRM12345" }       ✅ Prefixo CRM
+{ "crm": "CRM-SP-12345" }   ✅ Com estado
+{ "crm": "SP-12345" }       ✅ Estado-número
+{ "crm": "XPTO999" }        ❌ Formato inválido
+```
+
+### Tentativa de conflito de horário
+
+```http
+POST /appointments
+{
+  "doctorId": "...",
+  "patientId": "...",
+  "scheduledAt": "2025-12-20 14:15:00"
+}
+```
+
+O horário acima está a 15 minutos de uma consulta existente às 14:00, dentro da janela de ±29 minutos.
+
+**Resposta `400 Bad Request`:**
+```json
+{
+  "success": false,
+  "error": {
+    "code": "BAD_REQUEST",
+    "message": "Doctor already has an appointment in this time slot"
+  }
+}
+```
+
+---
+
+## Tratamento de Erros
+
+Todos os erros seguem o mesmo envelope JSON, o que facilita o tratamento no cliente — não importa onde o erro ocorreu, a estrutura é sempre a mesma:
+
+```json
+{
+  "success": false,
+  "error": {
+    "code": "CÓDIGO_SEMÂNTICO",
+    "message": "Descrição legível do erro"
+  }
+}
+```
+
+Para erros de validação, o campo `errors` detalha os problemas por campo:
+
+```json
+{
+  "success": false,
+  "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "Validation failed",
+    "errors": [
+      { "field": "cpf",   "message": "The CPF \"000.000.000-00\" is not valid." },
+      { "field": "email", "message": "Email \"abc\" is not a valid email address" }
+    ]
+  }
+}
+```
+
+### Tabela de códigos de erro
+
+| HTTP | Código | Quando ocorre |
+|---|---|---|
+| 400 | `BAD_REQUEST` | Violação de regra de negócio |
+| 401 | `UNAUTHORIZED` | Token ausente, expirado ou inválido |
+| 403 | `FORBIDDEN` | Usuário autenticado sem permissão |
+| 404 | `NOT_FOUND` | Recurso não encontrado |
+| 409 | `CONFLICT` | Duplicidade (email, CPF, CRM) |
+| 422 | `VALIDATION_ERROR` | Payload inválido (campos, formatos) |
+| 500 | `INTERNAL_SERVER_ERROR` | Erro não tratado na aplicação |
 
 ---
 
@@ -236,15 +845,60 @@ Execute a suíte de testes unitários:
 docker compose exec app php vendor/bin/phpunit
 ```
 
-Os testes cobrem todos os Use Cases com os seguintes cenários:
+Para ver a cobertura de código (requer Xdebug ou PCOV):
 
-- **CreateAppointmentUseCase** — agendamento com sucesso, médico não encontrado, médico inativo, paciente não encontrado, paciente inativo, agendamento no passado, conflito de horário, limite diário atingido
-- **CancelAppointmentUseCase** — cancelamento com sucesso, consulta não encontrada, já cancelada, já completada
-- **CreateDoctorUseCase** — criação com sucesso, especialidade não encontrada, CRM duplicado
-- **DeactivateDoctorUseCase** — desativação com sucesso, não encontrado, já inativo
-- **CreatePatientUseCase** — criação com sucesso, CPF duplicado, sem telefone
-- **DeactivatePatientUseCase** — desativação com sucesso, não encontrado, já inativo
-- **CreateSpecialtyUseCase** — criação com sucesso, especialidade duplicada
+```bash
+docker compose exec app php vendor/bin/phpunit --coverage-text
+```
+
+### Filosofia dos testes
+
+Os testes cobrem exclusivamente os **Use Cases** — a camada onde a lógica de negócio vive. Repositórios e entidades são mockados com `createMock()`, o que garante testes unitários puros: sem banco de dados, sem I/O, sem estado compartilhado entre casos de teste. A suíte roda em milissegundos em qualquer máquina.
+
+Cada teste segue a convenção `test_should_<comportamento_esperado>`, tornando os nomes dos métodos uma documentação viva do sistema — ler os testes é suficiente para entender o que cada Use Case garante.
+
+### Cobertura dos Use Cases
+
+**CreateAppointmentUseCase**
+- ✅ Cria consulta com sucesso
+- ✅ Lança exceção quando médico não encontrado
+- ✅ Lança exceção quando médico está inativo
+- ✅ Lança exceção quando paciente não encontrado
+- ✅ Lança exceção quando paciente está inativo
+- ✅ Lança exceção ao agendar no passado
+- ✅ Lança exceção em conflito de horário
+- ✅ Lança exceção ao atingir limite diário
+- ✅ Persiste notas quando fornecidas
+
+**CancelAppointmentUseCase**
+- ✅ Cancela consulta agendada com sucesso
+- ✅ Lança exceção quando consulta não encontrada
+- ✅ Lança exceção quando já cancelada
+- ✅ Lança exceção quando já completada
+
+**CreateDoctorUseCase**
+- ✅ Cria médico com sucesso
+- ✅ Lança exceção quando especialidade não encontrada
+- ✅ Lança exceção quando CRM já cadastrado
+
+**DeactivateDoctorUseCase**
+- ✅ Desativa médico com sucesso
+- ✅ Lança exceção quando não encontrado
+- ✅ Lança exceção quando já inativo
+
+**CreatePatientUseCase**
+- ✅ Cria paciente com sucesso
+- ✅ Lança exceção quando CPF já cadastrado
+- ✅ Cria paciente sem telefone
+
+**DeactivatePatientUseCase**
+- ✅ Desativa paciente com sucesso
+- ✅ Lança exceção quando não encontrado
+- ✅ Lança exceção quando já inativo
+
+**CreateSpecialtyUseCase**
+- ✅ Cria especialidade com sucesso
+- ✅ Lança exceção quando nome já cadastrado
 
 ---
 
@@ -252,6 +906,14 @@ Os testes cobrem todos os Use Cases com os seguintes cenários:
 
 ```
 medical-scheduling-api/
+├── config/
+│   ├── jwt/
+│   │   ├── private.pem          # Chave privada RSA (não commitar)
+│   │   └── public.pem           # Chave pública RSA
+│   └── packages/
+│       ├── lexik_jwt_authentication.yaml
+│       ├── messenger.yaml       # Transporte async para domain events
+│       └── security.yaml        # Firewalls, access_control, RBAC
 ├── docker/
 │   ├── Dockerfile
 │   └── nginx.conf
@@ -259,26 +921,41 @@ medical-scheduling-api/
 ├── src/
 │   ├── Controller/
 │   │   ├── AppointmentController.php
+│   │   ├── AuthController.php
 │   │   ├── DoctorController.php
 │   │   ├── PatientController.php
 │   │   └── SpecialtyController.php
 │   ├── DTO/
 │   │   ├── Appointment/CreateAppointmentDTO.php
+│   │   ├── Auth/RegisterDTO.php
 │   │   ├── Doctor/CreateDoctorDTO.php
 │   │   ├── Patient/CreatePatientDTO.php
 │   │   └── Specialty/CreateSpecialtyDTO.php
 │   ├── Entity/
-│   │   ├── Appointment.php
+│   │   ├── Appointment.php      # Encapsula cancel() e complete()
 │   │   ├── Doctor.php
 │   │   ├── Patient.php
-│   │   └── Specialty.php
+│   │   ├── Specialty.php
+│   │   └── User.php             # Implementa UserInterface + PasswordAuthenticatedUserInterface
+│   ├── Enum/
+│   │   ├── AppointmentStatus.php # isCancellable(), isTerminal()
+│   │   └── UserRole.php          # canManageScheduling(), isAdmin()
+│   ├── Event/
+│   │   ├── AppointmentCreatedEvent.php
+│   │   └── AppointmentCancelledEvent.php
 │   ├── EventSubscriber/
-│   │   └── ExceptionSubscriber.php
+│   │   └── ExceptionSubscriber.php # Tratamento global de exceções
+│   ├── Http/
+│   │   └── ApiResponse.php      # Envelope padronizado de resposta
+│   ├── MessageHandler/
+│   │   ├── SendAppointmentConfirmationHandler.php  # Simula e-mail/SMS de confirmação
+│   │   └── SendAppointmentCancellationHandler.php  # Simula e-mail/SMS de cancelamento
 │   ├── Repository/
-│   │   ├── AppointmentRepository.php
+│   │   ├── AppointmentRepository.php # hasConflict(), countByDoctorAndDate()
 │   │   ├── DoctorRepository.php
 │   │   ├── PatientRepository.php
-│   │   └── SpecialtyRepository.php
+│   │   ├── SpecialtyRepository.php
+│   │   └── UserRepository.php
 │   ├── UseCase/
 │   │   ├── Appointment/
 │   │   │   ├── CancelAppointmentUseCase.php
@@ -291,8 +968,13 @@ medical-scheduling-api/
 │   │   │   └── DeactivatePatientUseCase.php
 │   │   └── Specialty/
 │   │       └── CreateSpecialtyUseCase.php
-│   └── Validator/
-│       └── CpfConstraint.php
+│   ├── Validator/
+│   │   ├── CpfConstraint.php    # Validação completa com dígitos verificadores
+│   │   └── CrmConstraint.php    # Suporte a 4 formatos nacionais
+│   └── ValueObject/
+│       ├── Cpf.php              # CPF normalizado e validado
+│       ├── Crm.php              # CRM normalizado (CRM-UF-NUMERO)
+│       └── AppointmentSlot.php  # Slot de agendamento (UTC, janelas de conflito)
 ├── tests/
 │   └── UseCase/
 │       ├── Appointment/
@@ -303,3 +985,23 @@ medical-scheduling-api/
 ├── docker-compose.yml
 └── README.md
 ```
+
+---
+
+## Pontos de Destaque do Sistema
+
+**Separação de preocupações real** — Controllers não têm `if`s de negócio. Use Cases não sabem o que é HTTP. Repositories não sabem o que é um DTO. Cada camada tem exatamente uma razão para mudar, e você sente isso quando precisa alterar algo: a mudança fica contida.
+
+**Segurança por design** — o controle de acesso é declarado no `security.yaml` e reforçado com `#[IsGranted]` nos Controllers. Nenhuma rota fica desprotegida por esquecimento; a permissão precisa ser concedida explicitamente, não assumida.
+
+**Validação em duas camadas** — a primeira (DTOs + Symfony Validator) rejeita payloads malformados antes mesmo de tocar o UseCase. A segunda (UseCase) aplica as regras de negócio. Erros de cada camada retornam formatos distintos e semânticos, facilitando o diagnóstico no cliente.
+
+**Enums com comportamento** — o estado de uma entidade não é apenas um valor armazenado: é um objeto que sabe o que pode fazer. `AppointmentStatus::Scheduled->isCancellable()` é mais robusto e expressivo do que comparar strings espalhadas pelo código.
+
+**Testes sem infraestrutura** — a suíte unitária roda em milissegundos, sem banco, sem containers, sem variáveis de ambiente. A lógica de negócio é verificável em qualquer máquina com um `php vendor/bin/phpunit`.
+
+**Observabilidade de erros** — o `ExceptionSubscriber` garante que nenhuma stack trace vaza para o cliente em produção. O envelope padronizado torna o tratamento de erros no frontend previsível, independente do endpoint ou da camada onde a exceção ocorreu.
+
+**Domínio rico, não anêmico** — `Cpf`, `Crm` e `AppointmentSlot` são Value Objects que encapsulam validação, normalização e regras de negócio (janelas de conflito, limite diário, validação de data futura). Essa lógica não está duplicada nos Use Cases, nos Validators ou nos setters das entidades — está em um lugar só.
+
+**Arquitetura orientada a eventos** — criar ou cancelar uma consulta dispara eventos de domínio processados de forma assíncrona por handlers dedicados que simulam notificações por e-mail e SMS. Os Use Cases não são acoplados aos detalhes de entrega: eles publicam o evento e seguem em frente.

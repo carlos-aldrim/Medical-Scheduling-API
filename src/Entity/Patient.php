@@ -3,6 +3,7 @@
 namespace App\Entity;
 
 use App\Repository\PatientRepository;
+use App\ValueObject\Cpf;
 use Doctrine\Common\Collections\ArrayCollection;
 use Doctrine\Common\Collections\Collection;
 use Doctrine\ORM\Mapping as ORM;
@@ -40,9 +41,6 @@ class Patient
     #[Groups(['patient'])]
     private bool $isActive = true;
 
-    /**
-     * @var Collection<int, Appointment>
-     */
     #[ORM\OneToMany(targetEntity: Appointment::class, mappedBy: 'patient')]
     private Collection $appointments;
 
@@ -57,7 +55,7 @@ class Patient
     public function setName(string $name): static { $this->name = $name; return $this; }
 
     public function getCpf(): ?string { return $this->cpf; }
-    public function setCpf(string $cpf): static { $this->cpf = $cpf; return $this; }
+    public function setCpf(string $cpf): static { $this->cpf = (new Cpf($cpf))->value(); return $this; }
 
     public function getBirthDate(): ?\DateTimeInterface { return $this->birthDate; }
     public function setBirthDate(\DateTimeInterface $birthDate): static { $this->birthDate = $birthDate; return $this; }
