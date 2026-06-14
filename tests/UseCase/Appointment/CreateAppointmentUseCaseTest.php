@@ -7,13 +7,17 @@ use App\Entity\Appointment;
 use App\Entity\Doctor;
 use App\Entity\Patient;
 use App\Entity\Specialty;
+use App\Enum\AppointmentStatus;
 use App\Repository\AppointmentRepository;
 use App\Repository\DoctorRepository;
 use App\Repository\PatientRepository;
 use App\UseCase\Appointment\CreateAppointmentUseCase;
+use Doctrine\ORM\EntityManagerInterface;
 use PHPUnit\Framework\TestCase;
 use Symfony\Component\HttpKernel\Exception\BadRequestHttpException;
 use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
+use Symfony\Component\Messenger\Envelope;
+use Symfony\Component\Messenger\MessageBusInterface;
 
 class CreateAppointmentUseCaseTest extends TestCase
 {
@@ -47,17 +51,37 @@ class CreateAppointmentUseCaseTest extends TestCase
     private function makeDTO(?string $scheduledAt = null): CreateAppointmentDTO
     {
         $dto = new CreateAppointmentDTO();
-        $dto->doctorId = 'e1b2c3d4-0000-0000-0000-000000000001';
-        $dto->patientId = 'e1b2c3d4-0000-0000-0000-000000000002';
+        $dto->doctorId   = 'e1b2c3d4-0000-0000-0000-000000000001';
+        $dto->patientId  = 'e1b2c3d4-0000-0000-0000-000000000002';
         $dto->scheduledAt = $scheduledAt ?? (new \DateTime('+1 day'))->format('Y-m-d H:i:s');
-        $dto->notes = null;
+        $dto->notes       = null;
 
         return $dto;
     }
 
+    private function makeUseCase(
+        AppointmentRepository $appointmentRepo,
+        DoctorRepository      $doctorRepo,
+        PatientRepository     $patientRepo,
+    ): CreateAppointmentUseCase {
+        $em = $this->createMock(EntityManagerInterface::class);
+        $em->method('wrapInTransaction')->willReturnCallback(fn(callable $cb) => $cb());
+
+        $bus = $this->createMock(MessageBusInterface::class);
+        $bus->method('dispatch')->willReturn(new Envelope(new \stdClass()));
+
+        return new CreateAppointmentUseCase(
+            $appointmentRepo,
+            $doctorRepo,
+            $patientRepo,
+            $em,
+            $bus,
+        );
+    }
+
     public function test_should_create_appointment_successfully(): void
     {
-        $doctor = $this->makeDoctor();
+        $doctor  = $this->makeDoctor();
         $patient = $this->makePatient();
 
         $doctorRepo = $this->createMock(DoctorRepository::class);
@@ -71,11 +95,11 @@ class CreateAppointmentUseCaseTest extends TestCase
         $appointmentRepo->method('countByDoctorAndDate')->willReturn(0);
         $appointmentRepo->expects($this->once())->method('save');
 
-        $useCase = new CreateAppointmentUseCase($appointmentRepo, $doctorRepo, $patientRepo);
-        $appointment = $useCase->execute($this->makeDTO());
+        $appointment = $this->makeUseCase($appointmentRepo, $doctorRepo, $patientRepo)
+            ->execute($this->makeDTO());
 
         $this->assertInstanceOf(Appointment::class, $appointment);
-        $this->assertSame(Appointment::STATUS_SCHEDULED, $appointment->getStatus());
+        $this->assertSame(AppointmentStatus::Scheduled, $appointment->getStatus());
         $this->assertSame($doctor, $appointment->getDoctor());
         $this->assertSame($patient, $appointment->getPatient());
     }
@@ -85,16 +109,14 @@ class CreateAppointmentUseCaseTest extends TestCase
         $doctorRepo = $this->createMock(DoctorRepository::class);
         $doctorRepo->method('find')->willReturn(null);
 
-        $useCase = new CreateAppointmentUseCase(
-            $this->createMock(AppointmentRepository::class),
-            $doctorRepo,
-            $this->createMock(PatientRepository::class),
-        );
-
         $this->expectException(NotFoundHttpException::class);
         $this->expectExceptionMessage('Doctor not found');
 
-        $useCase->execute($this->makeDTO());
+        $this->makeUseCase(
+            $this->createMock(AppointmentRepository::class),
+            $doctorRepo,
+            $this->createMock(PatientRepository::class),
+        )->execute($this->makeDTO());
     }
 
     public function test_should_throw_when_doctor_is_inactive(): void
@@ -102,16 +124,14 @@ class CreateAppointmentUseCaseTest extends TestCase
         $doctorRepo = $this->createMock(DoctorRepository::class);
         $doctorRepo->method('find')->willReturn($this->makeDoctor(active: false));
 
-        $useCase = new CreateAppointmentUseCase(
-            $this->createMock(AppointmentRepository::class),
-            $doctorRepo,
-            $this->createMock(PatientRepository::class),
-        );
-
         $this->expectException(BadRequestHttpException::class);
         $this->expectExceptionMessage('Doctor is not active');
 
-        $useCase->execute($this->makeDTO());
+        $this->makeUseCase(
+            $this->createMock(AppointmentRepository::class),
+            $doctorRepo,
+            $this->createMock(PatientRepository::class),
+        )->execute($this->makeDTO());
     }
 
     public function test_should_throw_when_patient_not_found(): void
@@ -122,16 +142,14 @@ class CreateAppointmentUseCaseTest extends TestCase
         $patientRepo = $this->createMock(PatientRepository::class);
         $patientRepo->method('find')->willReturn(null);
 
-        $useCase = new CreateAppointmentUseCase(
-            $this->createMock(AppointmentRepository::class),
-            $doctorRepo,
-            $patientRepo,
-        );
-
         $this->expectException(NotFoundHttpException::class);
         $this->expectExceptionMessage('Patient not found');
 
-        $useCase->execute($this->makeDTO());
+        $this->makeUseCase(
+            $this->createMock(AppointmentRepository::class),
+            $doctorRepo,
+            $patientRepo,
+        )->execute($this->makeDTO());
     }
 
     public function test_should_throw_when_patient_is_inactive(): void
@@ -142,16 +160,14 @@ class CreateAppointmentUseCaseTest extends TestCase
         $patientRepo = $this->createMock(PatientRepository::class);
         $patientRepo->method('find')->willReturn($this->makePatient(active: false));
 
-        $useCase = new CreateAppointmentUseCase(
-            $this->createMock(AppointmentRepository::class),
-            $doctorRepo,
-            $patientRepo,
-        );
-
         $this->expectException(BadRequestHttpException::class);
         $this->expectExceptionMessage('Patient is not active');
 
-        $useCase->execute($this->makeDTO());
+        $this->makeUseCase(
+            $this->createMock(AppointmentRepository::class),
+            $doctorRepo,
+            $patientRepo,
+        )->execute($this->makeDTO());
     }
 
     public function test_should_throw_when_scheduling_in_the_past(): void
@@ -162,18 +178,16 @@ class CreateAppointmentUseCaseTest extends TestCase
         $patientRepo = $this->createMock(PatientRepository::class);
         $patientRepo->method('find')->willReturn($this->makePatient());
 
-        $useCase = new CreateAppointmentUseCase(
-            $this->createMock(AppointmentRepository::class),
-            $doctorRepo,
-            $patientRepo,
-        );
-
         $pastDate = (new \DateTime('-1 day'))->format('Y-m-d H:i:s');
 
         $this->expectException(BadRequestHttpException::class);
         $this->expectExceptionMessage('Cannot schedule appointment in the past');
 
-        $useCase->execute($this->makeDTO($pastDate));
+        $this->makeUseCase(
+            $this->createMock(AppointmentRepository::class),
+            $doctorRepo,
+            $patientRepo,
+        )->execute($this->makeDTO($pastDate));
     }
 
     public function test_should_throw_when_time_conflict_exists(): void
@@ -187,12 +201,11 @@ class CreateAppointmentUseCaseTest extends TestCase
         $appointmentRepo = $this->createMock(AppointmentRepository::class);
         $appointmentRepo->method('hasConflict')->willReturn(true);
 
-        $useCase = new CreateAppointmentUseCase($appointmentRepo, $doctorRepo, $patientRepo);
-
         $this->expectException(BadRequestHttpException::class);
         $this->expectExceptionMessage('Doctor already has an appointment in this time slot');
 
-        $useCase->execute($this->makeDTO());
+        $this->makeUseCase($appointmentRepo, $doctorRepo, $patientRepo)
+            ->execute($this->makeDTO());
     }
 
     public function test_should_throw_when_daily_limit_reached(): void
@@ -209,12 +222,11 @@ class CreateAppointmentUseCaseTest extends TestCase
         $appointmentRepo->method('hasConflict')->willReturn(false);
         $appointmentRepo->method('countByDoctorAndDate')->willReturn(3);
 
-        $useCase = new CreateAppointmentUseCase($appointmentRepo, $doctorRepo, $patientRepo);
-
         $this->expectException(BadRequestHttpException::class);
         $this->expectExceptionMessage('Doctor has reached the maximum of 3 appointments for this day');
 
-        $useCase->execute($this->makeDTO());
+        $this->makeUseCase($appointmentRepo, $doctorRepo, $patientRepo)
+            ->execute($this->makeDTO());
     }
 
     public function test_should_persist_notes_when_provided(): void
@@ -229,12 +241,11 @@ class CreateAppointmentUseCaseTest extends TestCase
         $appointmentRepo->method('hasConflict')->willReturn(false);
         $appointmentRepo->method('countByDoctorAndDate')->willReturn(0);
 
-        $useCase = new CreateAppointmentUseCase($appointmentRepo, $doctorRepo, $patientRepo);
-
         $dto = $this->makeDTO();
         $dto->notes = 'Patient has allergies';
 
-        $appointment = $useCase->execute($dto);
+        $appointment = $this->makeUseCase($appointmentRepo, $doctorRepo, $patientRepo)
+            ->execute($dto);
 
         $this->assertSame('Patient has allergies', $appointment->getNotes());
     }

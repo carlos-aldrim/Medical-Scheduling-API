@@ -4,14 +4,6 @@ namespace App\ValueObject;
 
 use InvalidArgumentException;
 
-/**
- * Value Object representing a Brazilian CRM (Conselho Regional de Medicina)
- * doctor registration number.
- *
- * Accepts the formats: "12345", "CRM12345", "CRM-SP-12345", "SP-12345".
- * Always normalises to the canonical "CRM-UF-NUMBER" form when a state is
- * present, or "CRM-NUMBER" when it is not.
- */
 final class Crm
 {
     private const VALID_STATES = [
@@ -49,9 +41,6 @@ final class Crm
         return self::parse(strtoupper(trim($crm)))[0] !== null;
     }
 
-    /**
-     * @return array{0: ?string, 1: ?string} [number, state]
-     */
     private static function parse(string $crm): array
     {
         $states = implode('|', self::VALID_STATES);
@@ -77,19 +66,16 @@ final class Crm
         return [null, null];
     }
 
-    /** The numeric registration portion, e.g. "12345". */
     public function number(): string
     {
         return $this->number;
     }
 
-    /** The two-letter state (UF), or null if none was provided. */
     public function state(): ?string
     {
         return $this->state;
     }
 
-    /** Canonical representation, e.g. "CRM-SP-12345" or "CRM-12345". */
     public function formatted(): string
     {
         return $this->state !== null
@@ -97,7 +83,6 @@ final class Crm
             : "CRM-{$this->number}";
     }
 
-    /** Raw value as persisted (matches the canonical formatted form). */
     public function value(): string
     {
         return $this->formatted();

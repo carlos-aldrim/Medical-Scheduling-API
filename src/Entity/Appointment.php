@@ -105,10 +105,6 @@ class Appointment
         return $this->createdAt;
     }
 
-    // -------------------------------------------------------------------------
-    // Domain transitions — the only way to change status
-    // -------------------------------------------------------------------------
-
     public function cancel(): static
     {
         $this->status = AppointmentStatus::Cancelled;

@@ -4,16 +4,8 @@ namespace App\ValueObject;
 
 use InvalidArgumentException;
 
-/**
- * Value Object representing a Brazilian CPF (Cadastro de Pessoas Físicas).
- *
- * Encapsulates normalisation (strips formatting) and validation (check
- * digits + rejection of repeated-digit sequences) so this logic lives
- * once in the domain instead of being duplicated across DTOs/UseCases.
- */
 final class Cpf
 {
-    /** Digits only, always 11 characters. */
     private readonly string $value;
 
     public function __construct(string $cpf)
@@ -40,7 +32,6 @@ final class Cpf
             return false;
         }
 
-        // Reject all-same-digit sequences (00000000000, 11111111111 …)
         if (preg_match('/^(\d)\1{10}$/', $cpf)) {
             return false;
         }
@@ -60,13 +51,11 @@ final class Cpf
         return true;
     }
 
-    /** Raw 11-digit representation, e.g. "12345678909". */
     public function value(): string
     {
         return $this->value;
     }
 
-    /** Formatted representation, e.g. "123.456.789-09". */
     public function formatted(): string
     {
         return sprintf(

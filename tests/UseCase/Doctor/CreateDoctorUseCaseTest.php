@@ -50,7 +50,7 @@ class CreateDoctorUseCaseTest extends TestCase
 
         $this->assertInstanceOf(Doctor::class, $doctor);
         $this->assertSame('Dr. House', $doctor->getName());
-        $this->assertSame('CRM12345', $doctor->getCrm());
+        $this->assertSame('CRM-12345', $doctor->getCrm());
         $this->assertSame($specialty, $doctor->getSpecialty());
         $this->assertTrue($doctor->isActive());
         $this->assertSame(10, $doctor->getMaxAppointmentsPerDay());

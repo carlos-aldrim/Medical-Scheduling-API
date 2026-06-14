@@ -4,13 +4,6 @@ namespace App\Event;
 
 use App\Entity\Appointment;
 
-/**
- * Domain event dispatched after an appointment is successfully created.
- *
- * Dispatched via Symfony Messenger ({@see MessageBusInterface}) so that
- * notification concerns (confirmation e-mail/SMS, etc.) are decoupled
- * from the {@see \App\UseCase\Appointment\CreateAppointmentUseCase}.
- */
 final class AppointmentCreatedEvent
 {
     private function __construct(
