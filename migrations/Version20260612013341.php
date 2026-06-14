@@ -23,7 +23,7 @@ final class Version20260612013341 extends AbstractMigration
         $this->addSql('CREATE TABLE appointment (id UUID NOT NULL, scheduled_at TIMESTAMP(0) WITHOUT TIME ZONE NOT NULL, status VARCHAR(20) NOT NULL, notes TEXT DEFAULT NULL, created_at TIMESTAMP(0) WITHOUT TIME ZONE NOT NULL, doctor_id UUID NOT NULL, patient_id UUID NOT NULL, PRIMARY KEY (id))');
         $this->addSql('CREATE INDEX IDX_FE38F84487F4FB17 ON appointment (doctor_id)');
         $this->addSql('CREATE INDEX IDX_FE38F8446B899279 ON appointment (patient_id)');
-        $this->addSql('CREATE TABLE doctor (id UUID NOT NULL, name VARCHAR(255) NOT NULL, crm VARCHAR(10) NOT NULL, max_appointments_per_day INT NOT NULL, is_active BOOLEAN NOT NULL, specialty_id UUID NOT NULL, PRIMARY KEY (id))');
+        $this->addSql('CREATE TABLE doctor (id UUID NOT NULL, name VARCHAR(255) NOT NULL, crm VARCHAR(20) NOT NULL, max_appointments_per_day INT NOT NULL, is_active BOOLEAN NOT NULL, specialty_id UUID NOT NULL, PRIMARY KEY (id))');
         $this->addSql('CREATE UNIQUE INDEX UNIQ_1FC0F36A9BDAAAFA ON doctor (crm)');
         $this->addSql('CREATE INDEX IDX_1FC0F36A9A353316 ON doctor (specialty_id)');
         $this->addSql('CREATE TABLE patient (id UUID NOT NULL, name VARCHAR(255) NOT NULL, cpf VARCHAR(11) NOT NULL, birth_date DATE NOT NULL, phone VARCHAR(20) DEFAULT NULL, is_active BOOLEAN NOT NULL, PRIMARY KEY (id))');

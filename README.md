@@ -17,10 +17,13 @@
 - [Variáveis de Ambiente](#variáveis-de-ambiente)
 - [Fluxo Completo da Aplicação](#fluxo-completo-da-aplicação)
 - [Endpoints](#endpoints)
+- [Documentação OpenAPI (Swagger)](#documentação-openapi-swagger)
 - [Exemplos de Requisição](#exemplos-de-requisição)
 - [Tratamento de Erros](#tratamento-de-erros)
+- [Observability](#observability)
 - [Testes](#testes)
 - [Estrutura do Projeto](#estrutura-do-projeto)
+- [Pontos de Destaque do Sistema](#pontos-de-destaque-do-sistema)
 
 ---
 
@@ -40,6 +43,9 @@ A ideia central é que erros de negócio sejam detectados o mais cedo possível,
 - Limite diário de consultas configurável individualmente por médico
 - Respostas padronizadas em toda a API via `ApiResponse`
 - Tratamento centralizado de exceções com mapeamento automático para HTTP status codes
+- Logging estruturado em JSON com correlation ID por requisição e health-check para operação em produção
+- Documentação OpenAPI/Swagger gerada automaticamente a partir do código
+- Suíte de testes unitários (Use Cases) e funcionais (HTTP end-to-end)
 
 ---
 
@@ -52,10 +58,13 @@ A ideia central é que erros de negócio sejam detectados o mais cedo possível,
 | Doctrine ORM | 3.x | Mapeamento objeto-relacional |
 | Doctrine Migrations | — | Versionamento do schema do banco |
 | LexikJWTAuthenticationBundle | — | Emissão e validação de tokens JWT |
+| Monolog | — | Logging estruturado (JSON) com correlation ID |
+| NelmioApiDocBundle | ^5.10 | Documentação OpenAPI/Swagger automática a partir de atributos PHP |
 | PostgreSQL | 16 | Banco de dados relacional |
 | Docker / Compose | — | Containerização e orquestração |
-| PHPUnit | 11.x | Testes unitários dos Use Cases |
+| PHPUnit | 11.x | Testes unitários (Use Cases) e funcionais (API) |
 | Nginx | Alpine | Servidor web / proxy reverso |
+| RabbitMQ | 3.x | Message broker para domain events (opcional) |
 
 ---
 
@@ -244,17 +253,14 @@ Criar e cancelar uma consulta dispara eventos de domínio — `AppointmentCreate
 $this->eventBus->dispatch(AppointmentCreatedEvent::fromAppointment($appointment));
 ```
 
-Os handlers em `src/MessageHandler/`, marcados com `#[AsMessageHandler]`, simulam envio de e-mail ou SMS de confirmação e cancelamento (via log). A configuração em `config/packages/messenger.yaml` roteia os eventos para um transporte `async`. O padrão usa `doctrine://` (armazena as mensagens na tabela `messenger_messages`, sem dependências externas), mas pode ser trocado para RabbitMQ ou Redis sem alterar uma linha de código da aplicação:
+Os handlers em `src/MessageHandler/`, marcados com `#[AsMessageHandler]`, simulam envio de e-mail ou SMS de confirmação e cancelamento (via log). A configuração em `config/packages/messenger.yaml` roteia os eventos para um transporte `async`. O padrão usa `doctrine://` (armazena as mensagens na tabela `messenger_messages`, sem dependências externas), mas pode ser trocado para RabbitMQ sem alterar uma linha de código da aplicação:
 
 ```env
 # Doctrine (padrão, sem infra extra)
-MESSENGER_TRANSPORT_DSN=doctrine://default?queue_name=async
+MESSENGER_TRANSPORT_DSN=doctrine://default?auto_setup=0
 
 # RabbitMQ
 MESSENGER_TRANSPORT_DSN=amqp://guest:guest@rabbitmq:5672/%2f/messages
-
-# Redis
-MESSENGER_TRANSPORT_DSN=redis://redis:6379/messages
 ```
 
 Para processar as mensagens em background:
@@ -264,6 +270,80 @@ docker compose exec app php bin/console messenger:consume async -vv
 ```
 
 Mensagens que falham após as tentativas de retry (`max_retries: 3`, multiplicador 2x) vão para a fila `failed`, reprocessável com `messenger:consume failed`.
+
+#### Usando RabbitMQ como transporte
+
+Para testar com RabbitMQ em vez do Doctrine, siga os passos abaixo.
+
+**1. Adicione o serviço no `docker-compose.yml`:**
+
+```yaml
+rabbitmq:
+  image: rabbitmq:3-management-alpine
+  container_name: medical_rabbitmq
+  ports:
+    - "5672:5672"
+    - "15672:15672"
+  environment:
+    RABBITMQ_DEFAULT_USER: guest
+    RABBITMQ_DEFAULT_PASS: guest
+  networks:
+    - medical_network
+```
+
+A rede `medical_network` é obrigatória — sem ela o container fica isolado e o `app` não consegue alcançar o RabbitMQ.
+
+**2. Instale a extensão `ext-amqp` no `Dockerfile`:**
+
+```dockerfile
+RUN apt-get update && apt-get install -y \
+    git \
+    curl \
+    unzip \
+    libpq-dev \
+    libzip-dev \
+    librabbitmq-dev \
+    && docker-php-ext-install pdo pdo_pgsql zip \
+    && pecl install amqp \
+    && docker-php-ext-enable amqp \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+```
+
+**3. Instale o pacote do Symfony:**
+
+```bash
+docker compose exec app composer require symfony/amqp-messenger
+```
+
+**4. Troque o DSN no `.env`:**
+
+```dotenv
+# Doctrine (padrão)
+# MESSENGER_TRANSPORT_DSN=doctrine://default?auto_setup=0
+
+# RabbitMQ
+MESSENGER_TRANSPORT_DSN=amqp://guest:guest@rabbitmq:5672/%2f/messages
+```
+
+**5. Rebuilde e suba tudo:**
+
+```bash
+docker compose down
+docker compose up --build -d
+```
+
+**6. Rode o consumer:**
+
+```bash
+docker compose exec app php bin/console messenger:consume async -vv
+```
+
+**7. Monitore pelo painel:**
+
+Acesse `http://localhost:15672` com `guest` / `guest`. Em **Queues and Streams** você vê a fila `messages` com os contadores de mensagens em tempo real. Para inspecionar o payload antes de consumir, clique na fila, role até **Get messages**, mantenha o **Ack Mode** como `Nack message requeue true` e clique em **Get Message(s)** — a mensagem volta para a fila após a visualização.
+
+Para voltar ao Doctrine é só descomentar o DSN original no `.env` e reiniciar os containers — nenhuma linha de código muda.
 
 ---
 
@@ -410,15 +490,37 @@ docker compose exec app php bin/console lexik:jwt:generate-keypair
 docker compose exec app php bin/console doctrine:migrations:migrate
 ```
 
-### 6. Crie o primeiro usuário administrador
+### 5.1. Configure a fila de mensagens
 
-Como `POST /auth/register` exige `ROLE_ADMIN`, o primeiro admin precisa ser criado via console — é um bootstrap necessário e intencional:
+O `MESSENGER_TRANSPORT_DSN` usa `auto_setup=0`, então a tabela `messenger_messages` precisa ser criada manualmente:
 
 ```bash
-docker compose exec app php bin/console app:create-admin \
-  --name="Admin" \
-  --email="admin@hospital.com" \
-  --password="Admin@123"
+docker compose exec app php bin/console messenger:setup-transports
+```
+
+### 6. Crie o primeiro usuário administrador
+
+Como `POST /auth/register` exige `ROLE_ADMIN`, o primeiro admin precisa ser inserido diretamente no banco. Primeiro gere o hash da senha:
+
+```bash
+docker compose exec app php -r "echo password_hash('Admin@123', PASSWORD_BCRYPT) . PHP_EOL;"
+```
+
+Depois entre no psql e execute o insert com o hash gerado:
+
+```bash
+docker compose exec db psql -U admin -d medical_scheduling
+```
+
+```sql
+INSERT INTO "user" (id, name, email, password, roles)
+VALUES (
+  gen_random_uuid(),
+  'Admin',
+  'admin@hospital.com',
+  '$2y$10$COLE_O_HASH_GERADO_AQUI',
+  '["ROLE_ADMIN"]'
+);
 ```
 
 ### 7. Acesse a API
@@ -426,6 +528,20 @@ docker compose exec app php bin/console app:create-admin \
 ```
 http://localhost:9000
 ```
+
+### Alternativa: servidor embutido do PHP (sem Docker)
+
+Para desenvolvimento local rápido, sem subir containers, é possível usar o servidor embutido do PHP apontando para o front controller:
+
+```bash
+php -S 127.0.0.1:9000 -t public public/index.php
+```
+
+```
+http://127.0.0.1:9000
+```
+
+> Esse modo é suficiente para desenvolvimento e para explorar a documentação OpenAPI (`/api/doc`), mas não é recomendado para produção — use Nginx + PHP-FPM ou os containers Docker descritos acima. O processo roda em foreground: o terminal precisa permanecer aberto enquanto o servidor estiver em uso.
 
 ---
 
@@ -445,7 +561,7 @@ http://localhost:9000
 | `JWT_PUBLIC_KEY` | `config/jwt/public.pem` | Caminho para a chave pública RSA |
 | `JWT_PASSPHRASE` | _(vazio)_ | Passphrase da chave privada (se houver) |
 | `DEFAULT_URI` | `http://localhost:9000` | URI base da aplicação |
-| `MESSENGER_TRANSPORT_DSN` | `doctrine://default?queue_name=async` | Transporte do Symfony Messenger — suporta `amqp://...` e `redis://...` sem alteração de código |
+| `MESSENGER_TRANSPORT_DSN` | `doctrine://default?auto_setup=0` | Transporte do Symfony Messenger — suporta `amqp://...` sem alteração de código |
 
 ---
 
@@ -722,6 +838,44 @@ Authorization: Bearer <receptionist_token>
 | `POST` | `/appointments` | ROLE_ADMIN, ROLE_RECEPTIONIST |
 | `PATCH` | `/appointments/{id}/cancel` | ROLE_ADMIN, ROLE_RECEPTIONIST |
 
+### Health & Docs
+
+| Método | Rota | Autenticação | Descrição |
+|---|---|---|---|
+| `GET` | `/health` | Pública | Health-check (banco + opcache), `200`/`503` |
+| `GET` | `/api/doc` | Pública | Swagger UI |
+| `GET` | `/api/doc.json` | Pública | Especificação OpenAPI 3 (JSON) |
+
+---
+
+## Documentação OpenAPI (Swagger)
+
+A API é autodocumentada via [NelmioApiDocBundle](https://github.com/nelmio/NelmioApiDocBundle), que gera uma especificação OpenAPI 3 em tempo real a partir dos atributos PHP (`#[OA\...]`) declarados em Controllers e DTOs — não há arquivos de spec mantidos manualmente, então a documentação nunca fica desatualizada em relação ao código.
+
+| Rota | Descrição |
+|---|---|
+| `GET /api/doc` | Swagger UI — interface interativa para explorar e testar os endpoints |
+| `GET /api/doc.json` | Especificação OpenAPI 3 em JSON, consumível por Postman, Insomnia, geradores de SDK, etc. |
+
+Ambas as rotas são públicas (`PUBLIC_ACCESS`), permitindo integração de times externos sem necessidade de autenticação prévia apenas para consultar o contrato.
+
+A spec inclui:
+
+- Todos os endpoints agrupados por tag (`Auth`, `Doctors`, `Patients`, `Specialties`, `Appointments`, `Health`)
+- Schemas de request body gerados a partir dos DTOs (`CreateAppointmentDTO`, `RegisterDTO`, etc.), incluindo as constraints de validação
+- Respostas documentadas por status code (200, 201, 400, 401, 403, 404, 409, 422, 503)
+- Esquema de segurança `bearerAuth` (JWT), com botão **Authorize** no Swagger UI para testar endpoints autenticados diretamente na interface
+
+Para acessar localmente:
+
+```bash
+php -S 127.0.0.1:9000 -t public public/index.php
+```
+
+```
+http://127.0.0.1:9000/api/doc
+```
+
 ---
 
 ## Exemplos de Requisição
@@ -833,72 +987,154 @@ Para erros de validação, o campo `errors` detalha os problemas por campo:
 | 404 | `NOT_FOUND` | Recurso não encontrado |
 | 409 | `CONFLICT` | Duplicidade (email, CPF, CRM) |
 | 422 | `VALIDATION_ERROR` | Payload inválido (campos, formatos) |
+| 503 | `SERVICE_UNAVAILABLE` | Health-check detectou dependência indisponível (ex: banco) |
 | 500 | `INTERNAL_SERVER_ERROR` | Erro não tratado na aplicação |
+
+---
+
+## Observability
+
+A API expõe os três pilares básicos de observabilidade exigidos em produção: logs estruturados e correlacionáveis, métricas operacionais via health-check e visibilidade do estado de dependências críticas.
+
+### Logging estruturado com Monolog
+
+Todos os logs são emitidos em formato JSON via Monolog, prontos para ingestão por ferramentas como ELK, Loki ou CloudWatch Logs. Cada entrada de log carrega automaticamente:
+
+- **Correlation ID** — um UUID v4 gerado (ou propagado, se o cliente enviar o header `X-Correlation-Id`) por requisição, injetado em *todas* as mensagens de log daquela requisição via `CorrelationIdProcessor`. O mesmo ID é devolvido no header de resposta, permitindo rastrear uma requisição de ponta a ponta entre cliente, API e logs.
+- **Contexto da aplicação** — nome do serviço (`medical-scheduling-api`) e ambiente (`dev`, `prod`, `test`).
+- **Eventos de requisição/resposta** — o `RequestLogSubscriber` registra `http.request` (método, path, query string, IP, user agent) e `http.response` (status, duração em ms), com nível ajustado automaticamente conforme o status code (`info` para 2xx/3xx, `warning` para 4xx, `error` para 5xx).
+
+Exemplo de log gerado:
+
+```json
+{
+  "message": "http.response",
+  "context": {
+    "method": "POST",
+    "path": "/appointments",
+    "status": 201,
+    "duration_ms": 42.31,
+    "ip": "172.18.0.1"
+  },
+  "level": 200,
+  "level_name": "INFO",
+  "channel": "app",
+  "extra": {
+    "correlation_id": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+    "app": "medical-scheduling-api",
+    "env": "prod"
+  }
+}
+```
+
+Em produção, o handler `fingers_crossed` mantém um buffer e só grava o log completo (incluindo o contexto de debug) quando ocorre um erro real, evitando ruído desnecessário sem perder visibilidade quando algo falha.
+
+### Health Check
+
+```http
+GET /health
+```
+
+Endpoint público (sem autenticação), pensado para liveness/readiness probes de orquestradores (Kubernetes, Docker Swarm, ECS) e load balancers. Verifica:
+
+- Conectividade real com o PostgreSQL (`SELECT 1`)
+- Status do OPcache
+
+**Resposta `200 OK` (saudável):**
+```json
+{
+  "status": "ok",
+  "checks": {
+    "database": { "status": "ok" },
+    "opcache": { "status": "ok", "enabled": true }
+  }
+}
+```
+
+**Resposta `503 Service Unavailable` (degradado):**
+```json
+{
+  "status": "error",
+  "checks": {
+    "database": { "status": "error", "detail": "SQLSTATE[08006]..." },
+    "opcache": { "status": "ok", "enabled": true }
+  }
+}
+```
 
 ---
 
 ## Testes
 
-Execute a suíte de testes unitários:
+O projeto possui duas suítes complementares: testes **unitários** dos Use Cases (mocks, sem I/O) e testes **funcionais de API** (HTTP end-to-end, com kernel real e banco PostgreSQL).
+
+### Estrutura
+
+```
+tests/
+├── Api/                          # Testes funcionais (WebTestCase)
+│   ├── ApiTestCase.php           # Base: client HTTP, fixtures, helpers de autenticação
+│   ├── ApiDocControllerTest.php  # /api/doc e /api/doc.json
+│   ├── AppointmentControllerTest.php
+│   ├── AuthControllerTest.php
+│   ├── DoctorControllerTest.php
+│   └── HealthControllerTest.php
+└── UseCase/                       # Testes unitários (mocks)
+    ├── Appointment/
+    ├── Doctor/
+    ├── Patient/
+    └── Specialty/
+```
+
+### Testes Unitários (Use Cases)
+
+Cobrem exclusivamente a camada de Use Cases — onde a lógica de negócio vive. Repositórios e entidades são mockados com `createMock()`, garantindo testes unitários puros: sem banco de dados, sem I/O, sem estado compartilhado entre casos de teste. A suíte roda em milissegundos em qualquer máquina.
+
+Cada teste segue a convenção `test_should_<comportamento_esperado>`, tornando os nomes dos métodos uma documentação viva do sistema — ler os testes é suficiente para entender o que cada Use Case garante.
+
+**Cobertura dos Use Cases:**
+
+- **CreateAppointmentUseCase** — cria consulta com sucesso; lança exceção quando médico/paciente não encontrado ou inativo; lança exceção ao agendar no passado, em conflito de horário ou ao atingir limite diário; persiste notas quando fornecidas
+- **CancelAppointmentUseCase** — cancela consulta agendada com sucesso; lança exceção quando não encontrada, já cancelada ou já completada
+- **CreateDoctorUseCase** — cria médico com sucesso; lança exceção quando especialidade não encontrada ou CRM já cadastrado
+- **DeactivateDoctorUseCase** — desativa médico com sucesso; lança exceção quando não encontrado ou já inativo
+- **CreatePatientUseCase** — cria paciente com sucesso (com e sem telefone); lança exceção quando CPF já cadastrado
+- **DeactivatePatientUseCase** — desativa paciente com sucesso; lança exceção quando não encontrado ou já inativo
+- **CreateSpecialtyUseCase** — cria especialidade com sucesso; lança exceção quando nome já cadastrado
+
+### Testes de Integração e API (WebTestCase)
+
+Sobem o kernel real do Symfony e exercitam os endpoints HTTP de ponta a ponta — incluindo autenticação JWT, autorização por role, persistência real no PostgreSQL de teste e cenários de erro.
+
+O que essa suíte cobre:
+
+- **Fluxo de autenticação completo**: login com credenciais válidas/inválidas, emissão de JWT, acesso a `/auth/me`, registro de usuários com controle de role
+- **Autorização (RBAC)**: cada endpoint é testado com tokens de diferentes roles, validando `401` (sem token) e `403` (role insuficiente)
+- **Cenários de erro reais**: `404` para recursos inexistentes (com `error.code: NOT_FOUND`), `422` com `error.errors[]` detalhado por campo para payloads inválidos, `409` para conflitos (e-mail duplicado), `400` para violações de regra de negócio (agendamento no passado)
+- **Persistência e estado**: criação, listagem paginada (`meta.total`, `meta.hasMore`), cancelamento de consultas, desativação de médicos/pacientes — tudo contra um banco PostgreSQL real, truncado entre testes via `ApiTestCase::truncateDatabase()`
+- **Contrato de resposta**: o envelope `{ success, data, error, meta }` é validado em todos os cenários, garantindo consistência entre endpoints
+- **Documentação**: `/api/doc` e `/api/doc.json` acessíveis sem autenticação e com a spec OpenAPI válida
+
+### Executando
 
 ```bash
-docker compose exec app php vendor/bin/phpunit
+# apenas testes unitários (Use Cases)
+docker compose exec app vendor/bin/phpunit --testsuite Unit
+
+# apenas testes funcionais/API (requer banco de teste configurado, ver .env.test)
+docker compose exec app vendor/bin/phpunit --testsuite Api
+
+# suíte completa
+docker compose exec app vendor/bin/phpunit
 ```
+
+A suíte `Api` requer um PostgreSQL acessível conforme `DATABASE_URL` do `.env.test`, com schema migrado (`doctrine:migrations:migrate --env=test`).
 
 Para ver a cobertura de código (requer Xdebug ou PCOV):
 
 ```bash
-docker compose exec app php vendor/bin/phpunit --coverage-text
+docker compose exec app vendor/bin/phpunit --coverage-text
 ```
-
-### Filosofia dos testes
-
-Os testes cobrem exclusivamente os **Use Cases** — a camada onde a lógica de negócio vive. Repositórios e entidades são mockados com `createMock()`, o que garante testes unitários puros: sem banco de dados, sem I/O, sem estado compartilhado entre casos de teste. A suíte roda em milissegundos em qualquer máquina.
-
-Cada teste segue a convenção `test_should_<comportamento_esperado>`, tornando os nomes dos métodos uma documentação viva do sistema — ler os testes é suficiente para entender o que cada Use Case garante.
-
-### Cobertura dos Use Cases
-
-**CreateAppointmentUseCase**
-- ✅ Cria consulta com sucesso
-- ✅ Lança exceção quando médico não encontrado
-- ✅ Lança exceção quando médico está inativo
-- ✅ Lança exceção quando paciente não encontrado
-- ✅ Lança exceção quando paciente está inativo
-- ✅ Lança exceção ao agendar no passado
-- ✅ Lança exceção em conflito de horário
-- ✅ Lança exceção ao atingir limite diário
-- ✅ Persiste notas quando fornecidas
-
-**CancelAppointmentUseCase**
-- ✅ Cancela consulta agendada com sucesso
-- ✅ Lança exceção quando consulta não encontrada
-- ✅ Lança exceção quando já cancelada
-- ✅ Lança exceção quando já completada
-
-**CreateDoctorUseCase**
-- ✅ Cria médico com sucesso
-- ✅ Lança exceção quando especialidade não encontrada
-- ✅ Lança exceção quando CRM já cadastrado
-
-**DeactivateDoctorUseCase**
-- ✅ Desativa médico com sucesso
-- ✅ Lança exceção quando não encontrado
-- ✅ Lança exceção quando já inativo
-
-**CreatePatientUseCase**
-- ✅ Cria paciente com sucesso
-- ✅ Lança exceção quando CPF já cadastrado
-- ✅ Cria paciente sem telefone
-
-**DeactivatePatientUseCase**
-- ✅ Desativa paciente com sucesso
-- ✅ Lança exceção quando não encontrado
-- ✅ Lança exceção quando já inativo
-
-**CreateSpecialtyUseCase**
-- ✅ Cria especialidade com sucesso
-- ✅ Lança exceção quando nome já cadastrado
 
 ---
 
@@ -913,6 +1149,8 @@ medical-scheduling-api/
 │   └── packages/
 │       ├── lexik_jwt_authentication.yaml
 │       ├── messenger.yaml       # Transporte async para domain events
+│       ├── monolog.yaml         # Logging estruturado (JSON) por ambiente
+│       ├── nelmio_api_doc.yaml  # Configuração do Swagger/OpenAPI
 │       └── security.yaml        # Firewalls, access_control, RBAC
 ├── docker/
 │   ├── Dockerfile
@@ -923,6 +1161,7 @@ medical-scheduling-api/
 │   │   ├── AppointmentController.php
 │   │   ├── AuthController.php
 │   │   ├── DoctorController.php
+│   │   ├── HealthController.php  # GET /health
 │   │   ├── PatientController.php
 │   │   └── SpecialtyController.php
 │   ├── DTO/
@@ -944,12 +1183,18 @@ medical-scheduling-api/
 │   │   ├── AppointmentCreatedEvent.php
 │   │   └── AppointmentCancelledEvent.php
 │   ├── EventSubscriber/
-│   │   └── ExceptionSubscriber.php # Tratamento global de exceções
+│   │   ├── CorrelationIdSubscriber.php  # Gera/propaga X-Correlation-Id
+│   │   ├── ExceptionSubscriber.php      # Tratamento global de exceções
+│   │   └── RequestLogSubscriber.php     # Loga http.request / http.response
 │   ├── Http/
 │   │   └── ApiResponse.php      # Envelope padronizado de resposta
+│   ├── Logger/
+│   │   └── CorrelationIdProcessor.php   # Injeta correlation_id em todos os logs
 │   ├── MessageHandler/
 │   │   ├── SendAppointmentConfirmationHandler.php  # Simula e-mail/SMS de confirmação
 │   │   └── SendAppointmentCancellationHandler.php  # Simula e-mail/SMS de cancelamento
+│   ├── OpenApi/
+│   │   └── AuthLoginDocs.php    # Documentação OpenAPI de /auth/login (sem controller)
 │   ├── Repository/
 │   │   ├── AppointmentRepository.php # hasConflict(), countByDoctorAndDate()
 │   │   ├── DoctorRepository.php
@@ -976,12 +1221,20 @@ medical-scheduling-api/
 │       ├── Crm.php              # CRM normalizado (CRM-UF-NUMERO)
 │       └── AppointmentSlot.php  # Slot de agendamento (UTC, janelas de conflito)
 ├── tests/
-│   └── UseCase/
+│   ├── Api/                       # Testes funcionais HTTP end-to-end
+│   │   ├── ApiTestCase.php
+│   │   ├── ApiDocControllerTest.php
+│   │   ├── AppointmentControllerTest.php
+│   │   ├── AuthControllerTest.php
+│   │   ├── DoctorControllerTest.php
+│   │   └── HealthControllerTest.php
+│   └── UseCase/                   # Testes unitários (mocks)
 │       ├── Appointment/
 │       ├── Doctor/
 │       ├── Patient/
 │       └── Specialty/
 ├── .env.example
+├── .env.test
 ├── docker-compose.yml
 └── README.md
 ```
@@ -998,9 +1251,11 @@ medical-scheduling-api/
 
 **Enums com comportamento** — o estado de uma entidade não é apenas um valor armazenado: é um objeto que sabe o que pode fazer. `AppointmentStatus::Scheduled->isCancellable()` é mais robusto e expressivo do que comparar strings espalhadas pelo código.
 
-**Testes sem infraestrutura** — a suíte unitária roda em milissegundos, sem banco, sem containers, sem variáveis de ambiente. A lógica de negócio é verificável em qualquer máquina com um `php vendor/bin/phpunit`.
+**Testes em múltiplas camadas** — a suíte unitária roda em milissegundos, sem banco, sem containers, sem variáveis de ambiente, validando a lógica de negócio isoladamente. A suíte funcional valida o contrato HTTP real — rotas, autenticação, autorização, serialização e status codes — fechando a lacuna entre "a regra de negócio está certa" e "a API entrega essa regra corretamente ao cliente".
 
-**Observabilidade de erros** — o `ExceptionSubscriber` garante que nenhuma stack trace vaza para o cliente em produção. O envelope padronizado torna o tratamento de erros no frontend previsível, independente do endpoint ou da camada onde a exceção ocorreu.
+**Observabilidade de ponta a ponta** — cada requisição carrega um correlation ID propagado por toda a stack de logs (via Monolog), permitindo correlacionar uma chamada do cliente com as entradas de log correspondentes. O `/health` expõe o estado real de dependências críticas para orquestradores e load balancers, e o `ExceptionSubscriber` garante que nenhuma stack trace vaza para o cliente em produção — o envelope padronizado torna o tratamento de erros no frontend previsível, independente do endpoint ou da camada onde a exceção ocorreu.
+
+**Contrato de API auto-documentado** — a especificação OpenAPI é gerada a partir do próprio código (`#[OA\...]` em Controllers e DTOs), eliminando o risco clássico de documentação desatualizada. O Swagger UI em `/api/doc` serve tanto como referência para times de frontend/integração quanto como ferramenta de exploração e teste manual da API.
 
 **Domínio rico, não anêmico** — `Cpf`, `Crm` e `AppointmentSlot` são Value Objects que encapsulam validação, normalização e regras de negócio (janelas de conflito, limite diário, validação de data futura). Essa lógica não está duplicada nos Use Cases, nos Validators ou nos setters das entidades — está em um lugar só.
 

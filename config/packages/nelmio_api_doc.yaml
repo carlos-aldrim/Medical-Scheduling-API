@@ -1,0 +1,35 @@
+nelmio_api_doc:
+    documentation:
+        info:
+            title: Medical Scheduling API
+            description: API for managing doctors, patients, specialties and appointments.
+            version: 1.0.0
+        components:
+            securitySchemes:
+                bearerAuth:
+                    type: http
+                    scheme: bearer
+                    bearerFormat: JWT
+        security:
+            - bearerAuth: []
+        tags:
+            - name: Auth
+              description: Authentication and user management
+            - name: Doctors
+              description: Doctor management
+            - name: Patients
+              description: Patient management
+            - name: Specialties
+              description: Medical specialties
+            - name: Appointments
+              description: Appointment scheduling
+            - name: Health
+              description: Health check endpoint
+    areas:
+        path_patterns:
+            - ^/auth
+            - ^/doctors
+            - ^/patients
+            - ^/specialties
+            - ^/appointments
+            - ^/health

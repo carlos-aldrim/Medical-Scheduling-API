@@ -13,6 +13,10 @@ security:
             pattern: ^/(_(profiler|wdt)|css|images|js)/
             security: false
 
+        health:
+            pattern: ^/health
+            security: false
+
         login:
             pattern: ^/auth/login
             stateless: true
@@ -29,7 +33,9 @@ security:
             jwt: ~
 
     access_control:
+        - { path: ^/health,     roles: PUBLIC_ACCESS }
         - { path: ^/auth/login, roles: PUBLIC_ACCESS }
+        - { path: ^/api/doc,    roles: PUBLIC_ACCESS }
 
         - { path: ^/auth/register, roles: ROLE_ADMIN, methods: [POST] }
 
