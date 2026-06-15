@@ -13,7 +13,7 @@ WORKDIR /var/www
 
 COPY . .
 
-RUN composer install --no-interaction --optimize-autoloader --no-dev
+RUN composer install --no-interaction --optimize-autoloader --no-dev --no-scripts
 
 COPY docker/nginx.conf /etc/nginx/sites-available/default
 
