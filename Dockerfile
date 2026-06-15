@@ -21,8 +21,10 @@ COPY docker/nginx.render.conf /etc/nginx/sites-available/default
 COPY docker/start.sh /start.sh
 RUN chmod +x /start.sh
 
-RUN mkdir -p /var/www/var && chown -R www-data:www-data /var/www/var
-
+RUN mkdir -p /var/www/var/log /var/www/var/cache && \
+    chown -R www-data:www-data /var/www/var && \
+    chmod -R 775 /var/www/var
+    
 EXPOSE 10000
 
 CMD ["/start.sh"]
