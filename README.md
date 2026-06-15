@@ -18,6 +18,7 @@
 - [Fluxo Completo da Aplicação](#fluxo-completo-da-aplicação)
 - [Endpoints](#endpoints)
 - [Documentação OpenAPI (Swagger)](#documentação-openapi-swagger)
+- [Coleção Postman](#coleção-postman)
 - [Exemplos de Requisição](#exemplos-de-requisição)
 - [Tratamento de Erros](#tratamento-de-erros)
 - [Observability](#observability)
@@ -32,6 +33,17 @@
 Um sistema de agendamento médico que vai além do CRUD básico. Ele gerencia pacientes, médicos, especialidades e consultas com controle fino de permissões por perfil — e a integridade dos dados é garantida em múltiplas camadas: validação de payload via DTOs, regras de negócio isoladas em Use Cases e queries especializadas nos Repositories.
 
 A ideia central é que erros de negócio sejam detectados o mais cedo possível, com respostas consistentes e semânticas em todos os endpoints.
+
+### 🌐 Deploy em Produção
+
+A API está disponível em produção no seguinte endereço:
+
+| Recurso | URL |
+|---|---|
+| **API Base URL** | https://medical-scheduling-api.onrender.com |
+| **Swagger UI** | https://medical-scheduling-api.onrender.com/api/doc |
+
+> **Nota:** O ambiente de produção está hospedado no Render (plano gratuito). A primeira requisição pode levar alguns segundos enquanto o container é inicializado após um período de inatividade.
 
 **O que o sistema faz:**
 
@@ -852,10 +864,12 @@ Authorization: Bearer <receptionist_token>
 
 A API é autodocumentada via [NelmioApiDocBundle](https://github.com/nelmio/NelmioApiDocBundle), que gera uma especificação OpenAPI 3 em tempo real a partir dos atributos PHP (`#[OA\...]`) declarados em Controllers e DTOs — não há arquivos de spec mantidos manualmente, então a documentação nunca fica desatualizada em relação ao código.
 
-| Rota | Descrição |
-|---|---|
-| `GET /api/doc` | Swagger UI — interface interativa para explorar e testar os endpoints |
-| `GET /api/doc.json` | Especificação OpenAPI 3 em JSON, consumível por Postman, Insomnia, geradores de SDK, etc. |
+| Ambiente | Rota | Descrição |
+|---|---|---|
+| **Produção** | https://medical-scheduling-api.onrender.com/api/doc | Swagger UI — interface interativa em produção |
+| **Produção** | https://medical-scheduling-api.onrender.com/api/doc.json | Especificação OpenAPI 3 em JSON |
+| **Local** | `http://localhost:9000/api/doc` | Swagger UI local |
+| **Local** | `http://localhost:9000/api/doc.json` | Especificação OpenAPI 3 local |
 
 Ambas as rotas são públicas (`PUBLIC_ACCESS`), permitindo integração de times externos sem necessidade de autenticação prévia apenas para consultar o contrato.
 
@@ -875,6 +889,16 @@ php -S 127.0.0.1:9000 -t public public/index.php
 ```
 http://127.0.0.1:9000/api/doc
 ```
+
+---
+
+## Coleção Postman
+
+Todos os endpoints estão organizados numa coleção Postman pronta para uso, com exemplos de requisição e variáveis de ambiente configuradas para apontar tanto para o ambiente local quanto para produção.
+
+**[▶ Acessar a Coleção no Postman](https://web.postman.co/workspace/6bf3229c-02a9-4f6b-85be-e2317351b5b0/collection/24675355-4481afff-98d8-42b1-a104-cbee894ac739?action=share&source=copy-link&creator=24675355)**
+
+A coleção cobre o fluxo completo de ponta a ponta descrito neste README: autenticação, registro de usuários, criação de especialidades, médicos, pacientes e o ciclo completo de agendamento e cancelamento de consultas. É o caminho mais rápido para explorar a API sem precisar montar as requisições manualmente.
 
 ---
 
@@ -1255,7 +1279,7 @@ medical-scheduling-api/
 
 **Observabilidade de ponta a ponta** — cada requisição carrega um correlation ID propagado por toda a stack de logs (via Monolog), permitindo correlacionar uma chamada do cliente com as entradas de log correspondentes. O `/health` expõe o estado real de dependências críticas para orquestradores e load balancers, e o `ExceptionSubscriber` garante que nenhuma stack trace vaza para o cliente em produção — o envelope padronizado torna o tratamento de erros no frontend previsível, independente do endpoint ou da camada onde a exceção ocorreu.
 
-**Contrato de API auto-documentado** — a especificação OpenAPI é gerada a partir do próprio código (`#[OA\...]` em Controllers e DTOs), eliminando o risco clássico de documentação desatualizada. O Swagger UI em `/api/doc` serve tanto como referência para times de frontend/integração quanto como ferramenta de exploração e teste manual da API.
+**Contrato de API auto-documentado** — a especificação OpenAPI é gerada a partir do próprio código (`#[OA\...]` em Controllers e DTOs), eliminando o risco clássico de documentação desatualizada. O Swagger UI em `/api/doc` (e em produção em https://medical-scheduling-api.onrender.com/api/doc) serve tanto como referência para times de frontend/integração quanto como ferramenta de exploração e teste manual da API.
 
 **Domínio rico, não anêmico** — `Cpf`, `Crm` e `AppointmentSlot` são Value Objects que encapsulam validação, normalização e regras de negócio (janelas de conflito, limite diário, validação de data futura). Essa lógica não está duplicada nos Use Cases, nos Validators ou nos setters das entidades — está em um lugar só.
 
