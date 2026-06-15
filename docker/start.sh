@@ -2,6 +2,16 @@ set -e
 
 export APP_ENV=prod
 
+echo "==> Gerando chaves JWT..."
+mkdir -p config/jwt
+if [ ! -f config/jwt/private.pem ]; then
+    openssl genrsa -out config/jwt/private.pem 2048
+    openssl rsa -pubout -in config/jwt/private.pem -out config/jwt/public.pem
+    echo "    Chaves geradas."
+else
+    echo "    Chaves já existem."
+fi
+
 echo "==> Limpando e aquecendo cache..."
 php bin/console cache:clear --env=prod
 php bin/console cache:warmup --env=prod
