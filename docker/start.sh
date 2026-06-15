@@ -3,10 +3,11 @@ set -e
 export APP_ENV=prod
 
 echo "==> Gerando chaves JWT..."
-mkdir -p config/jwt
-if [ ! -f config/jwt/private.pem ]; then
-    openssl genrsa -out config/jwt/private.pem 2048
-    openssl rsa -pubout -in config/jwt/private.pem -out config/jwt/public.pem
+mkdir -p /var/www/config/jwt
+if [ ! -f /var/www/config/jwt/private.pem ]; then
+    openssl genrsa -out /var/www/config/jwt/private.pem 2048
+    openssl rsa -pubout -in /var/www/config/jwt/private.pem -out /var/www/config/jwt/public.pem
+    chmod 644 /var/www/config/jwt/private.pem /var/www/config/jwt/public.pem
     echo "    Chaves geradas."
 else
     echo "    Chaves já existem."
