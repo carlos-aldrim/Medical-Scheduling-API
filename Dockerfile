@@ -20,7 +20,7 @@ COPY docker/nginx.conf /etc/nginx/sites-available/default
 COPY docker/start.sh /start.sh
 RUN chmod +x /start.sh
 
-RUN chown -R www-data:www-data /var/www/var
+RUN mkdir -p /var/www/var && chown -R www-data:www-data /var/www/var
 
 EXPOSE 10000
 
